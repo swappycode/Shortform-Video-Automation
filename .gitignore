@@ -8,6 +8,7 @@ filtered/
 output/
 downloads/
 subs/
+assets/
 
 # Cache + Model Weights
 HF_HOME/
@@ -15,6 +16,11 @@ __pycache__/
 *.pt
 *.bin
 *.onnx
+
+client_secret.json
+render.py
+layer2_manifest.json
+config.json
 
 # Python venv
 .venv/
