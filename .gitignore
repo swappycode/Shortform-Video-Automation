@@ -1,0 +1,29 @@
+# Video files
+*.mp4
+*.wav
+*.mkv
+vod.mp4
+clips/
+filtered/
+output/
+downloads/
+subs/
+
+# Cache + Model Weights
+HF_HOME/
+__pycache__/
+*.pt
+*.bin
+*.onnx
+
+# Python venv
+.venv/
+env/
+venv/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
