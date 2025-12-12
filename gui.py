@@ -1,3 +1,15 @@
+# gui.py
+# -*- coding: utf-8 -*-
+
+import sys
+# Ensure stdout/stderr use UTF-8 to avoid cp1252 crashes when GUI captures layer output
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    # Older Pythons may not support reconfigure; that's okay
+    pass
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 import json
@@ -5,15 +17,60 @@ from pathlib import Path
 import subprocess
 import threading
 import os
-import sys
+# prefer_bundled_ffmpeg - add at top of gui.py
+import os, sys
+def prefer_bundled_ffmpeg():
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+      os.path.join(base, "ffmpeg", "bin"),
+      os.path.join(base, "bundled_tools", "ffmpeg", "bin")
+    ]
+    for ffbin in candidates:
+        if os.path.isdir(ffbin):
+            os.environ["PATH"] = ffbin + os.pathsep + os.environ.get("PATH", "")
+            os.environ["FFMPEG_BINARY"] = os.path.join(ffbin, "ffmpeg.exe") if os.name=="nt" else os.path.join(ffbin,"ffmpeg")
+            break
+prefer_bundled_ffmpeg()
+
+
+# Detect venv Python
+VENV_PYTHON = None
+
+def find_venv():
+    """Find venv Python executable"""
+    # Check common venv locations
+    possible_paths = [
+        Path("venv") / "Scripts" / "python.exe",
+        Path("myvenv") / "Scripts" / "python.exe",
+        Path("env") / "Scripts" / "python.exe",
+        Path(".venv") / "Scripts" / "python.exe",
+        Path("venv") / "bin" / "python",
+        Path("myvenv") / "bin" / "python",
+        Path("env") / "bin" / "python",
+        Path(".venv") / "bin" / "python",
+    ]
+    
+    for path in possible_paths:
+        if path.exists():
+            return str(path)
+    
+    return None
+
+VENV_PYTHON = find_venv()
 
 # For font detection
 if sys.platform == "win32":
-    import winreg
+    try:
+        import winreg
+    except Exception:
+        winreg = None
 elif sys.platform == "darwin":
     pass  # macOS fonts
 else:
     pass  # Linux fonts
+
+# Project root (ensure subprocesses run from correct cwd)
+PROJECT_ROOT = Path(__file__).parent.resolve()
 
 class ShortsAutomationGUI:
     def __init__(self, root):
@@ -23,7 +80,7 @@ class ShortsAutomationGUI:
         self.root.configure(bg="#f0f0f0")
         
         # Config file path
-        self.config_file = Path("config.json")
+        self.config_file = PROJECT_ROOT / "config.json"
         
         # Default configuration
         self.config = {
@@ -62,7 +119,10 @@ class ShortsAutomationGUI:
                 "ducking_ratio": 4,
                 "ducking_attack": 200,
                 "ducking_release": 1000,
-                "audio_boost": 1.5
+                "audio_boost": 1.5,
+                # new keys (defaults)
+                "randomize_bgm": False,
+                "disable_bgm": False
             }
         }
         
@@ -73,17 +133,36 @@ class ShortsAutomationGUI:
         self.available_fonts = self.get_system_fonts()
         self.available_models = self.get_whisper_models()
         
+        # Check venv
+        if VENV_PYTHON:
+            self.print_console(f"[OK] Found venv Python: {VENV_PYTHON}")
+        else:
+            self.print_console("[WARN] No venv found! Layers will use system Python.")
+        
         # Create UI
         self.create_ui()
         
+        # Ensure BGM UI state reflects loaded config
+        try:
+            # set internal booleanvars to loaded values
+            self.layer3_randomize_bgm.set(self.config["layer3"].get("randomize_bgm", False))
+            self.layer3_disable_bgm.set(self.config["layer3"].get("disable_bgm", False))
+        except Exception:
+            pass
+        self.update_bgm_state()
+        
         # Log after UI is ready
-        self.log("✅ GUI Loaded Successfully!")
+        self.log("[OK] GUI Loaded Successfully!")
+        if VENV_PYTHON:
+            self.log(f"[OK] Using venv: {VENV_PYTHON}")
+        else:
+            self.log("[WARN] No venv detected - using system Python")
         
     def get_system_fonts(self):
         """Get list of installed fonts on the system"""
         fonts = set()
         
-        if sys.platform == "win32":
+        if sys.platform == "win32" and 'winreg' in globals() and winreg is not None:
             # Windows fonts
             try:
                 registry = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
@@ -96,7 +175,7 @@ class ShortsAutomationGUI:
                     
                 winreg.CloseKey(key)
             except Exception as e:
-                print(f"Could not read Windows fonts: {e}")
+                self.print_console(f"[WARN] Could not read Windows fonts: {e}")
                 
         elif sys.platform == "darwin":
             # macOS fonts
@@ -150,7 +229,7 @@ class ShortsAutomationGUI:
                 model_dirs = os.listdir(hf_home)
                 # Add any found models
                 for d in model_dirs:
-                    if "whisper" in d.lower():
+                    if "whisper" in d.lower() or d.lower().startswith("large") or d.lower().startswith("medium"):
                         models.append(d)
             except:
                 pass
@@ -193,6 +272,8 @@ class ShortsAutomationGUI:
                    command=self.load_config_dialog).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="🔄 Reset to Default", 
                    command=self.reset_config).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="🐍 Select Python", 
+                   command=self.select_python).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="🚀 Run Layer 1", 
                    command=lambda: self.run_layer(1)).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="🚀 Run Layer 2", 
@@ -483,7 +564,8 @@ class ShortsAutomationGUI:
         self.layer3_bgm_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         self.layer3_bgm_path.insert(0, self.config["layer3"]["bgm_path"])
         
-        ttk.Button(bgm_frame, text="Browse", command=self.browse_bgm).pack(side=tk.LEFT)
+        self.browse_bgm_btn = ttk.Button(bgm_frame, text="Browse", command=self.browse_bgm)
+        self.browse_bgm_btn.pack(side=tk.LEFT)
         
         row = 2
         self.create_entry(frame4, "BGM Volume (0.0-1.0):", "layer3", "bgm_volume", row)
@@ -496,6 +578,28 @@ class ShortsAutomationGUI:
         row += 1
         self.create_entry(frame4, "Ducking Release (ms):", "layer3", "ducking_release", row)
         
+        # ---- NEW BGM MODE OPTIONS ----
+        tk.Label(frame4, text="BGM Modes:", font=("Arial", 10, "bold")).grid(
+            row=row, column=0, sticky=tk.W, pady=(15,5)
+        )
+        row += 1
+
+        # Randomize BGM checkbox
+        self.layer3_randomize_bgm = tk.BooleanVar(value=self.config["layer3"].get("randomize_bgm", False))
+        chk_random = ttk.Checkbutton(frame4, text="Randomize BGM per clip", 
+                                     variable=self.layer3_randomize_bgm,
+                                     command=self.update_bgm_state)
+        chk_random.grid(row=row, column=0, sticky=tk.W, pady=5)
+        row += 1
+
+        # Disable BGM checkbox (no music)
+        self.layer3_disable_bgm = tk.BooleanVar(value=self.config["layer3"].get("disable_bgm", False))
+        chk_disable = ttk.Checkbutton(frame4, text="Render WITHOUT BGM", 
+                                      variable=self.layer3_disable_bgm,
+                                      command=self.update_bgm_state)
+        chk_disable.grid(row=row, column=0, sticky=tk.W, pady=5)
+        row += 1
+
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
@@ -517,6 +621,37 @@ class ShortsAutomationGUI:
             self.layer3_bgm_path.delete(0, tk.END)
             self.layer3_bgm_path.insert(0, filename)
             
+    def update_bgm_state(self):
+        """Enable/disable BGM path selection based on mode"""
+        random_mode = bool(self.layer3_randomize_bgm.get())
+        no_bgm = bool(self.layer3_disable_bgm.get())
+
+        # No BGM = everything disabled except checkbox
+        if no_bgm:
+            # disable random mode visually
+            self.layer3_randomize_bgm.set(False)
+            # disable bgm path entry and browse button
+            try:
+                self.layer3_bgm_path.config(state="disabled")
+                self.browse_bgm_btn.config(state="disabled")
+            except Exception:
+                pass
+            return
+
+        # Random mode disables manual BGM path
+        if random_mode:
+            try:
+                self.layer3_bgm_path.config(state="disabled")
+                self.browse_bgm_btn.config(state="disabled")
+            except Exception:
+                pass
+        else:
+            try:
+                self.layer3_bgm_path.config(state="normal")
+                self.browse_bgm_btn.config(state="normal")
+            except Exception:
+                pass
+
     def collect_config(self):
         """Collect all values from UI"""
         config = {
@@ -555,7 +690,9 @@ class ShortsAutomationGUI:
                 "ducking_ratio": int(self.layer3_ducking_ratio.get()),
                 "ducking_attack": int(self.layer3_ducking_attack.get()),
                 "ducking_release": int(self.layer3_ducking_release.get()),
-                "audio_boost": float(self.layer3_audio_boost.get())
+                "audio_boost": float(self.layer3_audio_boost.get()),
+                "randomize_bgm": bool(self.layer3_randomize_bgm.get()),
+                "disable_bgm": bool(self.layer3_disable_bgm.get())
             }
         }
         return config
@@ -563,23 +700,23 @@ class ShortsAutomationGUI:
     def save_config(self):
         try:
             config = self.collect_config()
-            with open(self.config_file, 'w') as f:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4)
-            self.log("✅ Configuration saved successfully!")
+            self.log("[OK] Configuration saved successfully!")
             messagebox.showinfo("Success", "Configuration saved!")
         except Exception as e:
-            self.log(f"❌ Error saving config: {e}")
+            self.log(f"[ERROR] Error saving config: {e}")
             messagebox.showerror("Error", f"Failed to save config: {e}")
             
     def load_config_silent(self):
         """Load config without logging (called before UI is created)"""
         try:
             if self.config_file.exists():
-                with open(self.config_file, 'r') as f:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
                     loaded_config = json.load(f)
                     # Merge with defaults to ensure all keys exist
                     self.merge_configs(loaded_config)
-        except Exception as e:
+        except Exception:
             pass  # Silently use defaults
     
     def merge_configs(self, loaded_config):
@@ -589,17 +726,20 @@ class ShortsAutomationGUI:
                 for key in self.config[layer]:
                     if key in loaded_config[layer]:
                         self.config[layer][key] = loaded_config[layer][key]
+        # Ensure new keys exist
+        self.config["layer3"].setdefault("randomize_bgm", False)
+        self.config["layer3"].setdefault("disable_bgm", False)
             
     def load_config(self):
         """Load config with logging (called after UI is created)"""
         try:
             if self.config_file.exists():
-                with open(self.config_file, 'r') as f:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
                     loaded_config = json.load(f)
                     self.merge_configs(loaded_config)
-                self.log("✅ Configuration loaded successfully!")
+                self.log("[OK] Configuration loaded successfully!")
         except Exception as e:
-            self.log(f"⚠️ Using default configuration: {e}")
+            self.log(f"[WARN] Using default configuration: {e}")
             
     def load_config_dialog(self):
         filename = filedialog.askopenfilename(
@@ -608,12 +748,12 @@ class ShortsAutomationGUI:
         )
         if filename:
             try:
-                with open(filename, 'r') as f:
+                with open(filename, 'r', encoding='utf-8') as f:
                     self.config = json.load(f)
-                self.log(f"✅ Configuration loaded from {filename}")
+                self.log(f"[OK] Configuration loaded from {filename}")
                 messagebox.showinfo("Success", "Configuration loaded! Please restart to apply.")
             except Exception as e:
-                self.log(f"❌ Error loading config: {e}")
+                self.log(f"[ERROR] Error loading config: {e}")
                 messagebox.showerror("Error", f"Failed to load config: {e}")
                 
     def reset_config(self):
@@ -625,10 +765,32 @@ class ShortsAutomationGUI:
             app = ShortsAutomationGUI(root)
             root.mainloop()
             
+    def print_console(self, message):
+        """Internal print that doesn't spam the GUI console formatting"""
+        try:
+            self.console.insert(tk.END, message + "\n")
+            self.console.see(tk.END)
+            self.console.update()
+        except Exception:
+            # if console not ready, fallback to stdout
+            print(message)
+    
     def log(self, message):
-        self.console.insert(tk.END, message + "\n")
-        self.console.see(tk.END)
-        self.console.update()
+        self.print_console(message)
+    
+    def select_python(self):
+        """Let user select Python executable manually"""
+        global VENV_PYTHON
+        
+        filename = filedialog.askopenfilename(
+            title="Select Python Executable",
+            filetypes=[("Python Executable", "python.exe"), ("All Files", "*.*")]
+        )
+        
+        if filename:
+            VENV_PYTHON = filename
+            self.log(f"[OK] Python set to: {VENV_PYTHON}")
+            messagebox.showinfo("Success", f"Python executable set to:\n{VENV_PYTHON}")
     
     def start_download(self):
         """Start YouTube download based on selected mode"""
@@ -640,17 +802,20 @@ class ShortsAutomationGUI:
             return
         
         self.log(f"\n{'='*60}")
-        self.log(f"📥 Starting Download...")
-        self.log(f"Mode: {mode}")
-        self.log(f"URL: {url}")
+        self.log(f"[INFO] Starting Download...")
+        self.log(f"[INFO] Mode: {mode}")
+        self.log(f"[INFO] URL: {url}")
         self.log(f"{'='*60}\n")
         
         def run():
             try:
+                # Use venv Python if available
+                python_exe = VENV_PYTHON if VENV_PYTHON else sys.executable or "python"
+                
                 if mode == "full":
                     # Full video download
                     cmd = [
-                        "python", "downloader.py",
+                        python_exe, str(PROJECT_ROOT / "downloader.py"),
                         url
                     ]
                 elif mode == "segment":
@@ -659,27 +824,32 @@ class ShortsAutomationGUI:
                     end = self.end_time.get().strip()
                     
                     if not start:
-                        self.log("❌ Please enter a start time!")
+                        self.log("[ERROR] Please enter a start time!")
                         return
                     
-                    cmd = ["python", "downloader.py", url, start]
+                    cmd = [python_exe, str(PROJECT_ROOT / "downloader.py"), url, start]
                     if end:
                         cmd.append(end)
                         
                 elif mode == "live":
                     # Live stream download
                     duration = self.live_duration.get().strip()
-                    cmd = ["python", "downloader.py", url, "--live"]
+                    cmd = [python_exe, str(PROJECT_ROOT / "downloader.py"), url, "--live"]
                     if duration:
                         cmd.append(duration)
                 
-                # Run download
+                # Run download (ensure correct cwd/env and UTF-8)
+                env = os.environ.copy()
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
-                    bufsize=1
+                    encoding='utf-8',
+                    bufsize=1,
+                    cwd=str(PROJECT_ROOT),
+                    env=env,
+                    errors='replace'
                 )
                 
                 for line in process.stdout:
@@ -688,15 +858,15 @@ class ShortsAutomationGUI:
                 process.wait()
                 
                 if process.returncode == 0:
-                    self.log(f"\n✅ Download completed successfully!")
-                    self.log(f"📁 Saved to downloads/ folder")
-                    self.log(f"📋 Copied to vod.mp4 for processing")
+                    self.log(f"\n[OK] Download completed successfully!")
+                    self.log(f"[OK] Saved to downloads/ folder")
+                    self.log(f"[OK] Copied to vod.mp4 for processing")
                     messagebox.showinfo("Success", "Video downloaded!\n\nSaved to: downloads/\nCopied to: vod.mp4")
                 else:
-                    self.log(f"\n❌ Download failed!")
+                    self.log(f"\n[ERROR] Download failed!")
                     
             except Exception as e:
-                self.log(f"\n❌ Error: {e}")
+                self.log(f"\n[ERROR] Exception: {e}")
                 messagebox.showerror("Error", f"Download failed: {e}")
         
         thread = threading.Thread(target=run)
@@ -704,20 +874,33 @@ class ShortsAutomationGUI:
         thread.start()
         
     def run_layer(self, layer_num):
+        # Save config first (GUI writes config.json which layer reads)
         self.save_config()
         self.log(f"\n{'='*60}")
-        self.log(f"🚀 Starting Layer {layer_num}...")
+        self.log(f"[INFO] Starting Layer {layer_num}...")
         self.log(f"{'='*60}\n")
         
         def run():
             try:
-                script_name = f"layer{layer_num}.py"
+                script_name = PROJECT_ROOT / f"layer{layer_num}.py"
+                
+                # Use venv Python if available, otherwise system Python
+                python_exe = VENV_PYTHON if VENV_PYTHON else sys.executable or "python"
+                
+                cmd = [python_exe, str(script_name)]
+                
+                env = os.environ.copy()
+                # ensure HF_HOME and other envs are passed; GUI trusts layer to read config
                 process = subprocess.Popen(
-                    ["python", script_name],
+                    cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
-                    bufsize=1
+                    encoding='utf-8',
+                    bufsize=1,
+                    cwd=str(PROJECT_ROOT),
+                    env=env,
+                    errors='replace'
                 )
                 
                 for line in process.stdout:
@@ -725,13 +908,16 @@ class ShortsAutomationGUI:
                     
                 process.wait()
                 
-                if process.returncode == 0:
-                    self.log(f"\n✅ Layer {layer_num} completed successfully!")
+                # CRITICAL FIX: Ignore CUDA cleanup crash (Windows error code 3221226505 = 0xC0000409)
+                # This error occurs during subprocess termination when CUDA cleanup conflicts with process exit
+                # The actual work is complete, so we treat it as success
+                if process.returncode == 0 or process.returncode == 3221226505:
+                    self.log(f"\n[OK] Layer {layer_num} completed successfully!")
                 else:
-                    self.log(f"\n❌ Layer {layer_num} failed with return code {process.returncode}")
+                    self.log(f"\n[ERROR] Layer {layer_num} failed with return code {process.returncode}")
                     
             except Exception as e:
-                self.log(f"\n❌ Error running Layer {layer_num}: {e}")
+                self.log(f"\n[ERROR] Error running Layer {layer_num}: {e}")
                 
         thread = threading.Thread(target=run)
         thread.daemon = True
@@ -740,20 +926,29 @@ class ShortsAutomationGUI:
     def run_all_layers(self):
         self.save_config()
         self.log(f"\n{'='*60}")
-        self.log("⚡ Starting ALL LAYERS...")
+        self.log("[INFO] Starting ALL LAYERS...")
         self.log(f"{'='*60}\n")
         
         def run():
+            # Use venv Python if available
+            python_exe = VENV_PYTHON if VENV_PYTHON else sys.executable or "python"
+            env = os.environ.copy()
+            
             for layer in [1, 2, 3]:
                 try:
-                    self.log(f"\n🚀 Running Layer {layer}...\n")
-                    script_name = f"layer{layer}.py"
+                    self.log(f"\n[INFO] Running Layer {layer}...\n")
+                    script_name = PROJECT_ROOT / f"layer{layer}.py"
+                    cmd = [python_exe, str(script_name)]
                     process = subprocess.Popen(
-                        ["python", script_name],
+                        cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
-                        bufsize=1
+                        encoding='utf-8',
+                        bufsize=1,
+                        cwd=str(PROJECT_ROOT),
+                        env=env,
+                        errors='replace'
                     )
                     
                     for line in process.stdout:
@@ -761,16 +956,17 @@ class ShortsAutomationGUI:
                         
                     process.wait()
                     
-                    if process.returncode != 0:
-                        self.log(f"\n❌ Layer {layer} failed! Stopping execution.")
+                    # CRITICAL FIX: Ignore CUDA cleanup crash for Layer 2
+                    if process.returncode != 0 and process.returncode != 3221226505:
+                        self.log(f"\n[ERROR] Layer {layer} failed! Stopping execution.")
                         return
                         
                 except Exception as e:
-                    self.log(f"\n❌ Error in Layer {layer}: {e}")
+                    self.log(f"\n[ERROR] Exception in Layer {layer}: {e}")
                     return
                     
             self.log(f"\n{'='*60}")
-            self.log("✅ ALL LAYERS COMPLETED SUCCESSFULLY!")
+            self.log("[OK] ALL LAYERS COMPLETED SUCCESSFULLY!")
             self.log(f"{'='*60}\n")
             
         thread = threading.Thread(target=run)

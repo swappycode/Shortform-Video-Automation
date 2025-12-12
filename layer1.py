@@ -1,5 +1,8 @@
+
+
 # layer1_audio.py
-import os, subprocess, wave, math, tempfile
+# -*- coding: utf-8 -*-
+import os, subprocess, wave, math, tempfile, json
 from pathlib import Path
 from tqdm import tqdm
 import numpy as np
@@ -8,20 +11,120 @@ ROOT = Path(".")
 VOD = ROOT / "vod.mp4"
 CLIPS = ROOT / "clips"
 CLIPS.mkdir(exist_ok=True)
+CONFIG_FILE = ROOT / "config.json"
 
-# Params
-SR = 16000
-WINDOW = 0.25
-HOP = 0.125
-SENS = 1.6
-PRE = 1.5
-POST = 8.0
-MIN_CLIP = 30.0
-MAX_CLIP = 60.0
-MERGE_WINDOW = 7.5
+# Load config or use defaults
+def load_config():
+    defaults = {
+        "sample_rate": 16000,
+        "window": 0.25,
+        "hop": 0.125,
+        "sensitivity": 1.6,
+        "pre_buffer": 1.5,
+        "post_buffer": 8.0,
+        "min_clip": 30.0,
+        "max_clip": 60.0,
+        "merge_window": 7.5
+    }
+    
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                return config.get("layer1", defaults)
+        except Exception as e:
+            print(f"[WARN] Could not load config: {e}")
+            print("[WARN] Using default values")
+            return defaults
+    return defaults
+
+cfg = load_config()
+
+# Params from config
+SR = int(cfg["sample_rate"])
+WINDOW = float(cfg["window"])
+HOP = float(cfg["hop"])
+SENS = float(cfg["sensitivity"])
+PRE = float(cfg["pre_buffer"])
+POST = float(cfg["post_buffer"])
+MIN_CLIP = float(cfg["min_clip"])
+MAX_CLIP = float(cfg["max_clip"])
+MERGE_WINDOW = float(cfg["merge_window"])
+
+print("=" * 60)
+print("LAYER 1 CONFIG:")
+print(f"  Sample Rate: {SR} Hz")
+print(f"  Window: {WINDOW}s, Hop: {HOP}s")
+print(f"  Sensitivity: {SENS}x")
+print(f"  Pre/Post Buffer: {PRE}s / {POST}s")
+print(f"  Clip Duration: {MIN_CLIP}s - {MAX_CLIP}s")
+print(f"  Merge Window: {MERGE_WINDOW}s")
+print("=" * 60 + "\n")
 
 def run(cmd):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+def get_keyframes(vod):
+    """Fast + reliable keyframe extraction using packet flags (GUI safe)."""
+    print("[INFO] Extracting keyframes... (packet mode)")
+
+    # This ffprobe command does NOT decode video frames.
+    # It inspects container-level packets, which is extremely fast.
+    cmd = [
+        "ffprobe",
+        "-v", "quiet",
+        "-select_streams", "v:0",
+        "-show_entries", "packet=pts_time,flags",
+        "-of", "csv=p=0",
+        str(vod)
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True
+        )
+    except FileNotFoundError:
+        print("[ERROR] ffprobe not found. Skipping keyframe snapping.")
+        return []
+
+    keyframes = []
+
+    # Output format of ffprobe:
+    # <PTS>,K__  (K indicates keyframe)
+    # <PTS>,__  
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+
+        parts = line.split(',')
+        if len(parts) != 2:
+            continue
+
+        pts, flags = parts
+
+        # Keyframe packets contain flag "K"
+        if "K" in flags:
+            try:
+                keyframes.append(float(pts))
+            except:
+                pass
+
+    keyframes.sort()
+    print(f"[OK] Found {len(keyframes)} keyframes")
+    return keyframes
+
+
+def snap_to_keyframe(timestamp, keyframes):
+    """Find nearest keyframe to given timestamp"""
+    if not keyframes:
+        return timestamp
+
+    # Find closest keyframe
+    closest = min(keyframes, key=lambda x: abs(x - timestamp))
+    return closest
 
 def extract_audio(vod, out_wav):
     cmd = ["ffmpeg","-y","-v","error","-i", str(vod), "-vn","-ac","1","-ar", str(SR), "-f","wav", str(out_wav)]
@@ -42,10 +145,13 @@ def detect_peaks(wav):
         data = np.frombuffer(raw, dtype=np.float32)
     win = max(1,int(WINDOW*rate)); hop = max(1,int(HOP*rate))
     energies=[]; times=[]
-    for i in range(0, max(1, len(data)-win+1), hop):
-        f = data[i:i+win]
-        energies.append(np.sqrt(np.mean(f*f)))
-        times.append(i/rate + (win/2)/rate)
+    total_steps = len(range(0, max(1, len(data)-win+1), hop))
+    with tqdm(total=total_steps, desc="Analyzing audio", ncols=80, unit="frames") as pbar:
+        for i in range(0, max(1, len(data)-win+1), hop):
+            f = data[i:i+win]
+            energies.append(np.sqrt(np.mean(f*f)))
+            times.append(i/rate + (win/2)/rate)
+            pbar.update(1)
     energies = np.array(energies)
     if len(energies)==0:
         return []
@@ -69,20 +175,22 @@ def merge_peaks(peaks):
     s = peaks[0]
     e = peaks[0]
 
-    for t in peaks[1:]:
-        # If within merge window AND span doesn't exceed 60 sec
-        if (t - e) <= MERGE_WINDOW and (t - s) <= MAX_CLIP:
-            e = t
-        else:
-            merged.append((s, e))
-            s = t
-            e = t
+    with tqdm(total=len(peaks), desc="Merging peaks", ncols=80, unit="peaks") as pbar:
+        for i, t in enumerate(peaks[1:], 1):
+            # If within merge window AND span doesn't exceed 60 sec
+            if (t - e) <= MERGE_WINDOW and (t - s) <= MAX_CLIP:
+                e = t
+            else:
+                merged.append((s, e))
+                s = t
+                e = t
+            pbar.update(1)
 
     merged.append((s, e))
     return merged
 
 
-def make_segments(merged):
+def make_segments(merged, keyframes):
     raw = []
 
     # --- First pass: build expanded segments with PRE/POST and MIN/MAX caps ---
@@ -93,7 +201,7 @@ def make_segments(merged):
         end = start + dur
         raw.append((round(start, 3), round(end, 3)))
 
-    # --- Second pass: fix overlaps + enforce EXACT clip durations ---
+    # --- Second pass: fix overlaps + enforce EXACT clip durations + snap to keyframes ---
     clean = []
     last_end = 0.0
 
@@ -107,17 +215,24 @@ def make_segments(merged):
         if s < last_end:
             s = last_end
 
-        # Compute new duration WITHOUT double-counting POST
-        new_dur = e - s
+        # Snap start and end to nearest keyframes
+        if keyframes:
+            s = snap_to_keyframe(s, keyframes)
 
-        # Enforce exactly MIN_CLIP–MAX_CLIP
-        if new_dur > MAX_CLIP:
-            new_dur = MAX_CLIP
-        if new_dur < MIN_CLIP:
-            new_dur = MIN_CLIP
+            # Calculate end based on snapped start
+            target_end = s + MIN_CLIP
+            e = snap_to_keyframe(target_end, keyframes)
 
-        # Compute corrected end
-        e = s + new_dur
+            # Make sure duration is within bounds
+            dur = e - s
+            if dur < MIN_CLIP:
+                # Find next keyframe that gives us MIN_CLIP duration
+                target_end = s + MIN_CLIP
+                e = snap_to_keyframe(target_end, keyframes)
+            elif dur > MAX_CLIP:
+                # Find earlier keyframe that gives us MAX_CLIP duration
+                target_end = s + MAX_CLIP
+                e = snap_to_keyframe(target_end, keyframes)
 
         clean.append((round(s, 3), round(e, 3)))
         last_end = e
@@ -140,7 +255,7 @@ def split_segments(vod, segs):
     # Final output pattern
     out_pattern = CLIPS / "clip_%04d.mp4"
 
-    print("\n⚡ Single-pass ffmpeg splitting (high-quality)...")
+    print("\n[INFO] Single-pass ffmpeg splitting (high-quality)...")
 
     # Probe total video duration for progress bar
     probe = subprocess.run(
@@ -166,7 +281,7 @@ def split_segments(vod, segs):
     ]
 
     print(f"Segments: {len(segs)}")
-    print("Running ffmpeg...")
+    print("[INFO] Running ffmpeg...")
 
     # Start ffmpeg
     proc = subprocess.Popen(
@@ -205,50 +320,55 @@ def split_segments(vod, segs):
         pbar.update(100 - last)
     pbar.close()
 
-    print("✅ Split complete!")
+    print("[OK] Split complete!")
 
     return sorted(CLIPS.glob("clip_*.mp4"))
 
 
 def main():
     print("=" * 60)
-    print("LAYER 1: Audio-based Peak Detection")
+    print("LAYER 1: Audio-based Peak Detection with Keyframe Snapping")
     print("=" * 60)
     
     if not VOD.exists():
-        print("❌ Error: put vod.mp4 in project root")
+        print("[ERROR] Error: put vod.mp4 in project root")
         return
     
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as t:
         wav = Path(t.name)
     
     # Step 1: Extract audio
-    print("\n[Step 1/4] Extracting audio from video...")
-    extract_audio(VOD, wav)
-    print("✅ Audio extracted")
+    print("\n[Step 1/5] Extracting audio from video...")
+    with tqdm(total=1, desc="Extracting audio", ncols=80, unit="file") as pbar:
+        extract_audio(VOD, wav)
+        pbar.update(1)
+    print("[OK] Audio extracted")
     
     # Step 2: Detect peaks
-    print("\n[Step 2/4] Detecting peaks in audio...")
+    print("\n[Step 2/5] Detecting peaks in audio...")
     peaks = detect_peaks(wav)
-    print(f"✅ Found {len(peaks)} peaks")
+    print(f"[OK] Found {len(peaks)} peaks")
     
     # Step 3: Merge peaks
-    print("\n[Step 3/4] Merging nearby peaks...")
+    print("\n[Step 3/5] Merging nearby peaks...")
     merged = merge_peaks(peaks)
-    print(f"✅ Merged into {len(merged)} segments")
+    print(f"[OK] Merged into {len(merged)} segments")
 
-    
-    
-    # Step 4: Create segments
-    print("\n[Step 4/4] Creating time segments...")
-    segs = make_segments(merged)
+    # Step 4: Extract keyframes
+    print("\n[Step 4/5] Extracting keyframes...")
+    keyframes = get_keyframes(VOD)
+    print(f"[OK] Loaded {len(keyframes)} keyframes")
+
+    # Step 5: Create segments
+    print("\n[Step 5/5] Creating time segments (snapped to keyframes)...")
+    segs = make_segments(merged, keyframes)
     
 
     if not segs:
-        print("❌ No peaks found")
+        print("[WARN] No peaks found")
     else:
         split_segments(VOD, segs)
-        print(f"✅ Created {len(segs)} clips in clips/")
+        print(f"[OK] Created {len(segs)} clips in clips/")
     
     try:
         wav.unlink()

@@ -1,35 +1,80 @@
-# Video files
+# ============================================
+# VIDEO FILES (raw clips, outputs, etc.)
+# ============================================
 *.mp4
 *.wav
 *.mkv
 vod.mp4
+
 clips/
 filtered/
 output/
 downloads/
 subs/
-assets/
 
-# Cache + Model Weights
+# Do NOT ignore entire assets folder (this breaks bgm)
+# Ignore only large video/media accidentally placed inside assets
+assets/*.mp4
+assets/*.wav
+assets/*.mkv
+
+# ============================================
+# IGNORE UPLOADER FOLDER ENTIRELY
+# (contains OAuth creds, scheduled uploads, tokens)
+# ============================================
+uploader/
+
+# ============================================
+# CACHE + MODEL WEIGHTS
+# ============================================
 HF_HOME/
 __pycache__/
 *.pt
 *.bin
 *.onnx
+*.safetensors
 
+huggingface/
+hf_cache/
+models/
+
+# ============================================
+# SENSITIVE FILES
+# ============================================
 client_secret.json
-render.py
-layer2_manifest.json
 config.json
 
-# Python venv
+# ============================================
+# PROJECT INTERNAL FILES THAT SHOULD NOT BE PUBLIC
+# ============================================
+render.py
+layer2_manifest.json
+
+# ============================================
+# PYTHON VENV
+# ============================================
 .venv/
 env/
 venv/
 
-# Logs
+# ============================================
+# PYINSTALLER BUILD OUTPUT
+# ============================================
+dist/
+build/
+*.spec
+
+# ============================================
+# LOGS
+# ============================================
 *.log
 
-# Temporary files
+# ============================================
+# TEMPORARY FILES
+# ============================================
 *.tmp
 *.temp
+*.bak
+*.swp
+Thumbs.db
+desktop.ini

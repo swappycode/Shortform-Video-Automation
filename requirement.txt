@@ -1,7 +1,11 @@
-faster-whisper>=0.3.0
-scenedetect>=0.7.0
-pysubs2>=1.8.0
-srt>=1.4.0
+numpy>=1.25
 tqdm
+torch>=2.2  # if you need GPU/CPU specific wheels, handle in installer docs
 ffmpeg-python
-pycaps>=0.1.0   # optional - for animated/CSS captions if you want to try
+yt-dlp
+pysubs2
+srt
+faster-whisper
+transformers
+huggingface-hub
+python-dotenv
