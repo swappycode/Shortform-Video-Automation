@@ -973,7 +973,11 @@ class ShortsAutomationGUI:
         thread.daemon = True
         thread.start()
 
-if __name__ == "__main__":
+def main():
     root = tk.Tk()
     app = ShortsAutomationGUI(root)
     root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
