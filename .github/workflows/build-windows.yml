@@ -26,24 +26,32 @@ jobs:
 
       - name: Fetch FFmpeg
         shell: pwsh
-        run: |
-          ./ffmpeg_fetch.ps1 -provider gyan
+        run: ./ffmpeg_fetch.ps1 -provider gyan
 
       - name: Verify FFmpeg
         run: dir bundled_tools\ffmpeg\bin
 
-      - name: Create empty assets folder
-        run: mkdir assets
+      - name: Create required empty folders
+        run: |
+          mkdir assets
+          mkdir downloads
+          mkdir output
+          mkdir filtered
+          mkdir subs
+          mkdir clips
 
       - name: Build ShortsStudio.exe
         shell: cmd
         run: |
           pyinstaller --noconfirm --onefile --windowed --clean ^
             --add-data "assets;assets" ^
-            --add-data "bundled_tools/ffmpeg/bin/ffmpeg.exe;ffmpeg/bin" ^
-            --add-data "bundled_tools/ffmpeg/bin/ffprobe.exe;ffmpeg/bin" ^
             --add-data "downloads;downloads" ^
             --add-data "output;output" ^
+            --add-data "filtered;filtered" ^
+            --add-data "subs;subs" ^
+            --add-data "clips;clips" ^
+            --add-data "bundled_tools/ffmpeg/bin/ffmpeg.exe;ffmpeg/bin" ^
+            --add-data "bundled_tools/ffmpeg/bin/ffprobe.exe;ffmpeg/bin" ^
             --name ShortsStudio cli.py
 
       - name: Upload EXE artifact
