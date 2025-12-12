@@ -18,6 +18,7 @@ assets/*.mp4
 assets/*.wav
 assets/*.mkv
 assets/
+bundled_tools/ffmpeg/bin/
 
 # ============================================
 # IGNORE UPLOADER FOLDER ENTIRELY
