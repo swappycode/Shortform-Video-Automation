@@ -17,6 +17,7 @@ subs/
 assets/*.mp4
 assets/*.wav
 assets/*.mkv
+assets/
 
 # ============================================
 # IGNORE UPLOADER FOLDER ENTIRELY
