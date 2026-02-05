@@ -172,8 +172,6 @@ ShortsStudio uses a structured 3-layer architecture:
 ├── layer3.py                  # Rendering and subtitle processing
 ├── downloader.py              # YouTube downloading logic
 ├── render.py                  # Rendering utilities and ffmpeg integration
-├── bundled_tools/ffmpeg/      # FFmpeg binaries (created in CI)
-├── assets/                    # GUI assets (ignored in repo)
 └── requirements.txt
 ```
 
