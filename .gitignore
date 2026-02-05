@@ -1,0 +1,40 @@
+# Video files
+*.mp4
+*.wav
+*.mkv
+vod.mp4
+clips/
+filtered/
+output/
+downloads/
+subs/
+assets/
+uploader/
+build/
+bundled_tools/
+dist/
+
+
+# Cache + Model Weights
+HF_HOME/
+__pycache__/
+*.pt
+*.bin
+*.onnx
+
+client_secret.json
+render.py
+layer2_manifest.json
+config.json
+
+# Python venv
+.venv/
+env/
+venv/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp

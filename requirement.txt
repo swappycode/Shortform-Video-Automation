@@ -1,0 +1,7 @@
+faster-whisper>=0.3.0
+scenedetect>=0.7.0
+pysubs2>=1.8.0
+srt>=1.4.0
+tqdm
+ffmpeg-python
+pycaps>=0.1.0   # optional - for animated/CSS captions if you want to try
