@@ -1,5 +1,5 @@
 faster-whisper>=0.3.0
-scenedetect>=0.7.0
+scenedetect>=0.6.7
 pysubs2>=1.8.0
 srt>=1.4.0
 tqdm
