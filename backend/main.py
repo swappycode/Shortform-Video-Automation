@@ -2,16 +2,15 @@ from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, String, Integer, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
-from datetime import datetime
-import stripe
+import hmac
+import hashlib
+import json
 import os
 
 # ---- Configuration ----
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/dbname")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "sk_test_...")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_...")
-
-stripe.api_key = STRIPE_SECRET_KEY
+LEMON_API_KEY = os.getenv("LEMON_API_KEY", "") 
+LEMON_WEBHOOK_SECRET = os.getenv("LEMON_WEBHOOK_SECRET", "my_lemon_secret")
 
 # ---- Database Setup ----
 engine = create_engine(DATABASE_URL)
@@ -23,10 +22,13 @@ class UserProfile(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     password_hash = Column(String)  # (In production, use Passlib to hash)
-    stripe_customer_id = Column(String, unique=True, index=True, nullable=True)
+    lemon_customer_id = Column(String, unique=True, index=True, nullable=True)
     subscription_status = Column(String, default="inactive") # 'active' or 'inactive'
 
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    print(f"Database connection warning: {e}")
 
 def get_db():
     db = SessionLocal()
@@ -52,7 +54,6 @@ def read_root():
 @app.post("/auth/login")
 def login(user_data: dict, db: Session = Depends(get_db)):
     """Simple placeholder login. Checks plaintext password."""
-    # TODO: Implement secure password hashing, JWTs, and real session tokens.
     username = user_data.get("username")
     password = user_data.get("password")
     
@@ -66,6 +67,22 @@ def login(user_data: dict, db: Session = Depends(get_db)):
         "subscription_status": user.subscription_status
     }
 
+@app.post("/auth/register")
+def register(user_data: dict, db: Session = Depends(get_db)):
+    """Register a new user. Default status is inactive."""
+    username = user_data.get("username")
+    password = user_data.get("password")
+    
+    if db.query(UserProfile).filter(UserProfile.username == username).first():
+        raise HTTPException(status_code=400, detail="Username already exists")
+        
+    new_user = UserProfile(username=username, password_hash=password, subscription_status="inactive")
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    return {"message": "User created", "user_id": new_user.id}
+
 @app.get("/user/{user_id}/status")
 def check_status(user_id: int, db: Session = Depends(get_db)):
     """The Desktop executable polls this to see if the user is allowed to use the app."""
@@ -75,43 +92,54 @@ def check_status(user_id: int, db: Session = Depends(get_db)):
         
     return {"subscription_status": user.subscription_status}
 
-@app.post("/stripe/webhook")
-async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    """Listens for successful Stripe subscriptions and updates the Database."""
+@app.post("/lemonsqueezy/webhook")
+async def lemonsqueezy_webhook(request: Request, db: Session = Depends(get_db)):
+    """Listens for successful Lemon Squeezy subscriptions and updates the Database."""
     payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
+    signature = request.headers.get("x-signature")
 
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, STRIPE_WEBHOOK_SECRET
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    if not signature:
+        raise HTTPException(status_code=400, detail="Missing signature header")
 
-    # Handle the event
-    if event['type'] == 'customer.subscription.created' or event['type'] == 'customer.subscription.updated':
-        subscription = event['data']['object']
-        customer_id = subscription.get('customer')
-        status = subscription.get('status')
-        
-        # Determine internal status
-        internal_status = 'active' if status in ['active', 'trialing'] else 'inactive'
-        
-        # Find user by Stripe customer ID and authorize them
-        user = db.query(UserProfile).filter(UserProfile.stripe_customer_id == customer_id).first()
-        if user:
-            user.subscription_status = internal_status
-            db.commit()
-            print(f"✅ Updated user {user.username} to {internal_status}")
+    # Verify signature
+    secret = LEMON_WEBHOOK_SECRET.encode('utf-8')
+    computed_signature = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+    
+    if not hmac.compare_digest(computed_signature, signature):
+        raise HTTPException(status_code=401, detail="Invalid signature")
 
-    elif event['type'] == 'customer.subscription.deleted':
-        subscription = event['data']['object']
-        customer_id = subscription.get('customer')
+    # Parse Event
+    data = await request.json()
+    event_name = data['meta']['event_name']
+    custom_data = data['meta'].get('custom_data', {})
+    
+    # We will pass the 'username' or 'user_id' in the checkout link custom data 
+    # so Lemon Squeezy sends it back to us here!
+    checkout_username = custom_data.get('username')
+
+    if event_name in ['subscription_created', 'subscription_updated']:
+        status = data['data']['attributes']['status']
+        customer_id = str(data['data']['attributes']['customer_id'])
         
-        user = db.query(UserProfile).filter(UserProfile.stripe_customer_id == customer_id).first()
+        # Internal status rules
+        internal_status = 'active' if status in ['active', 'trialing', 'past_due'] else 'inactive'
+        
+        # Find user by internal username we tracked during checkout
+        if checkout_username:
+            user = db.query(UserProfile).filter(UserProfile.username == checkout_username).first()
+            if user:
+                user.subscription_status = internal_status
+                user.lemon_customer_id = customer_id
+                db.commit()
+                print(f"✅ Updated user {user.username} to {internal_status}")
+
+    elif event_name in ['subscription_cancelled', 'subscription_expired']:
+        customer_id = str(data['data']['attributes']['customer_id'])
+        
+        user = db.query(UserProfile).filter(UserProfile.lemon_customer_id == customer_id).first()
         if user:
             user.subscription_status = 'inactive'
             db.commit()
-            print(f"❌ Revoked access for user {user.username}")
+            print(f"❌ Revoked access for Lemon Squeezy customer {customer_id}")
 
     return {"status": "success"}
