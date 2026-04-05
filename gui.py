@@ -113,7 +113,11 @@ class ShortsAutomationGUI(ctk.CTk):
                 else:
                     self.show_subscription_required_screen()
             else:
-                self.auth_error.configure(text=res.json().get("detail", "Login failed"))
+                try:
+                    err_msg = res.json().get("detail", "Login failed")
+                except:
+                    err_msg = f"Server Error {res.status_code}"
+                self.auth_error.configure(text=err_msg)
         except Exception as e:
             self.auth_error.configure(text="Could not connect to server.")
             print(e)
@@ -132,7 +136,11 @@ class ShortsAutomationGUI(ctk.CTk):
             if res.status_code == 200:
                 self.auth_error.configure(text="Account created! You can now login.", text_color="green")
             else:
-                self.auth_error.configure(text=res.json().get("detail", "Registration failed"), text_color="red")
+                try:
+                    err_msg = res.json().get("detail", "Registration failed")
+                except:
+                    err_msg = f"Server Error {res.status_code}"
+                self.auth_error.configure(text=err_msg, text_color="red")
         except:
             self.auth_error.configure(text="Could not connect to server.", text_color="red")
 

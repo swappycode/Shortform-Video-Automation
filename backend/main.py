@@ -9,6 +9,9 @@ import os
 
 # ---- Configuration ----
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/dbname")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 LEMON_API_KEY = os.getenv("LEMON_API_KEY", "") 
 LEMON_WEBHOOK_SECRET = os.getenv("LEMON_WEBHOOK_SECRET", "my_lemon_secret")
 
@@ -18,7 +21,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class UserProfile(Base):
-    __tablename__ = "profiles"
+    __tablename__ = "profiles_v2"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     password_hash = Column(String)  # (In production, use Passlib to hash)
