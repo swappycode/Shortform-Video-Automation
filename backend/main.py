@@ -14,6 +14,8 @@ if DATABASE_URL.startswith("postgres://"):
 
 LEMON_API_KEY = os.getenv("LEMON_API_KEY", "") 
 LEMON_WEBHOOK_SECRET = os.getenv("LEMON_WEBHOOK_SECRET", "my_lemon_secret")
+ADMIN_USER = os.getenv("ADMIN_USER")  # Configure these exclusively in Render Environment Variables
+ADMIN_PASS = os.getenv("ADMIN_PASS")
 
 # ---- Database Setup ----
 engine = create_engine(DATABASE_URL)
@@ -60,6 +62,15 @@ def login(user_data: dict, db: Session = Depends(get_db)):
     username = user_data.get("username")
     password = user_data.get("password")
     
+    # ---- Admin Bypass ----
+    if ADMIN_USER and ADMIN_PASS and username == ADMIN_USER and password == ADMIN_PASS:
+        return {
+            "user_id": 999999,
+            "username": "swappy",
+            "subscription_status": "active"
+        }
+    # ----------------------
+    
     user = db.query(UserProfile).filter(UserProfile.username == username).first()
     if not user or user.password_hash != password:
         raise HTTPException(status_code=401, detail="Invalid username or password")
@@ -89,6 +100,9 @@ def register(user_data: dict, db: Session = Depends(get_db)):
 @app.get("/user/{user_id}/status")
 def check_status(user_id: int, db: Session = Depends(get_db)):
     """The Desktop executable polls this to see if the user is allowed to use the app."""
+    if user_id == 999999: # Admin bypass ID
+        return {"subscription_status": "active"}
+        
     user = db.query(UserProfile).filter(UserProfile.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

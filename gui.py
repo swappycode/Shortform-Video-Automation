@@ -122,7 +122,10 @@ class ShortsAutomationGUI(ctk.CTk):
             self.auth_error.configure(text="Could not connect to server.")
             print(e)
         finally:
-            self.login_btn.configure(state="normal", text="Login")
+            try:
+                self.login_btn.configure(state="normal", text="Login")
+            except:
+                pass
 
     def do_register(self):
         u = self.username_entry.get().strip()
@@ -181,7 +184,10 @@ class ShortsAutomationGUI(ctk.CTk):
         except:
             self.sub_msg.configure(text="Could not connect to server.", text_color="red")
         finally:
-            self.refresh_btn.configure(state="normal", text="I already paid - Refresh Status")
+            try:
+                self.refresh_btn.configure(state="normal", text="I already paid - Refresh Status")
+            except:
+                pass
 
     # ==========================================
     # MAIN APP UI
