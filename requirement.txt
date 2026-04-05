@@ -5,3 +5,4 @@ srt>=1.4.0
 tqdm
 ffmpeg-python
 pycaps>=0.1.0   # optional - for animated/CSS captions if you want to try
+customtkinter>=5.2.2

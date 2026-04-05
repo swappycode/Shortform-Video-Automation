@@ -76,7 +76,7 @@ def download_full_stream(url):
     print(f"Output: {output_path}\n")
     
     cmd = [
-        "yt-dlp",
+        sys.executable, "-m", "yt_dlp",
         "-f", "bestvideo+bestaudio/best",
         "--merge-output-format", "mkv",
         "-o", str(output_path),
@@ -120,7 +120,7 @@ def download_stream_segment(url, start_time, end_time=None):
     print(f"Output: {output_path}\n")
     
     cmd = [
-        "yt-dlp",
+        sys.executable, "-m", "yt_dlp",
         "-f", "bestvideo+bestaudio/best",
         "--merge-output-format", "mkv",
         "-o", str(output_path),
@@ -167,7 +167,7 @@ def download_live_stream(url, duration=None):
     print(f"Output: {output_path}\n")
     
     cmd = [
-        "yt-dlp",
+        sys.executable, "-m", "yt_dlp",
         "-f", "bestvideo+bestaudio/best",
         "--merge-output-format", "mkv",
         "-o", str(output_path),

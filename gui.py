@@ -1,24 +1,24 @@
-# gui.py
-# -*- coding: utf-8 -*-
-
 import sys
-# Ensure stdout/stderr use UTF-8 to avoid cp1252 crashes when GUI captures layer output
+import os
+import subprocess
+from pathlib import Path
+
+# ---- Auto-Venv Relaucher ----
+# This MUST run before any third-party imports (like customtkinter) to prevent ModuleNotFoundErrors 
+# when users launch the script using their global Python environment instead of the .venv.
+venv_python = Path(__file__).parent / ".venv" / "Scripts" / "python.exe"
+if sys.platform == "win32" and venv_python.exists() and sys.executable.lower() != str(venv_python).lower():
+    sys.exit(subprocess.call([str(venv_python)] + sys.argv))
+# -----------------------------
+
+# ---- Ensure UTF-8 Console ----
 try:
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
 except Exception:
-    # Older Pythons may not support reconfigure; that's okay
     pass
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
-import json
-from pathlib import Path
-import subprocess
-import threading
-import os
-# prefer_bundled_ffmpeg - add at top of gui.py
-import os, sys
+# ---- Bundled FFmpeg Setup ----
 def prefer_bundled_ffmpeg():
     base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
     candidates = [
@@ -32,55 +32,33 @@ def prefer_bundled_ffmpeg():
             break
 prefer_bundled_ffmpeg()
 
-
-# Detect venv Python
-VENV_PYTHON = None
-
-def find_venv():
-    """Find venv Python executable"""
-    # Check common venv locations
-    possible_paths = [
-        Path("venv") / "Scripts" / "python.exe",
-        Path("myvenv") / "Scripts" / "python.exe",
-        Path("env") / "Scripts" / "python.exe",
-        Path(".venv") / "Scripts" / "python.exe",
-        Path("venv") / "bin" / "python",
-        Path("myvenv") / "bin" / "python",
-        Path("env") / "bin" / "python",
-        Path(".venv") / "bin" / "python",
-    ]
-    
-    for path in possible_paths:
-        if path.exists():
-            return str(path)
-    
-    return None
-
-VENV_PYTHON = find_venv()
+import customtkinter as ctk
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import json
+import threading
 
 # For font detection
 if sys.platform == "win32":
-    try:
-        import winreg
-    except Exception:
-        winreg = None
+    import winreg
 elif sys.platform == "darwin":
     pass  # macOS fonts
 else:
     pass  # Linux fonts
 
-# Project root (ensure subprocesses run from correct cwd)
-PROJECT_ROOT = Path(__file__).parent.resolve()
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
 
-class ShortsAutomationGUI:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Shorts Automation Control Panel")
-        self.root.geometry("1200x800")
-        self.root.configure(bg="#f0f0f0")
+class ShortsAutomationGUI(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        self.title("🎬 Shorts Studio - Automation Panel")
+        self.geometry("1100x800")
+        self.minsize(900, 600)
         
         # Config file path
-        self.config_file = PROJECT_ROOT / "config.json"
+        self.config_file = Path("config.json")
         
         # Default configuration
         self.config = {
@@ -119,865 +97,495 @@ class ShortsAutomationGUI:
                 "ducking_ratio": 4,
                 "ducking_attack": 200,
                 "ducking_release": 1000,
-                "audio_boost": 1.5,
-                # new keys (defaults)
-                "randomize_bgm": False,
-                "disable_bgm": False
+                "audio_boost": 1.5
             }
         }
         
-        # Load existing config if available (silently, before UI is created)
+        # Load existing config if available
         self.load_config_silent()
         
         # Get available fonts and models
         self.available_fonts = self.get_system_fonts()
         self.available_models = self.get_whisper_models()
         
-        # Check venv
-        if VENV_PYTHON:
-            self.print_console(f"[OK] Found venv Python: {VENV_PYTHON}")
-        else:
-            self.print_console("[WARN] No venv found! Layers will use system Python.")
+        # ---- UI Layout Setup ----
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
         
-        # Create UI
-        self.create_ui()
+        self.create_sidebar()
+        self.create_main_area()
+        self.create_console_area()
         
-        # Ensure BGM UI state reflects loaded config
-        try:
-            # set internal booleanvars to loaded values
-            self.layer3_randomize_bgm.set(self.config["layer3"].get("randomize_bgm", False))
-            self.layer3_disable_bgm.set(self.config["layer3"].get("disable_bgm", False))
-        except Exception:
-            pass
-        self.update_bgm_state()
+        # Create the views
+        self.views = {
+            "downloader": self.create_downloader_view(),
+            "layer1": self.create_layer1_view(),
+            "layer2": self.create_layer2_view(),
+            "layer3": self.create_layer3_view()
+        }
+        
+        # Initialize default view
+        self.select_view("downloader")
         
         # Log after UI is ready
-        self.log("[OK] GUI Loaded Successfully!")
-        if VENV_PYTHON:
-            self.log(f"[OK] Using venv: {VENV_PYTHON}")
-        else:
-            self.log("[WARN] No venv detected - using system Python")
-        
+        self.log("✅ CustomTkinter GUI Loaded Successfully!")
+
+    # --- System Query Methods ---
     def get_system_fonts(self):
-        """Get list of installed fonts on the system"""
         fonts = set()
-        
-        if sys.platform == "win32" and 'winreg' in globals() and winreg is not None:
-            # Windows fonts
+        if sys.platform == "win32":
             try:
                 registry = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
                 key = winreg.OpenKey(registry, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts")
-                
                 for i in range(winreg.QueryInfoKey(key)[1]):
                     name, value, _ = winreg.EnumValue(key, i)
                     font_name = name.split("(")[0].strip()
                     fonts.add(font_name)
-                    
                 winreg.CloseKey(key)
             except Exception as e:
-                self.print_console(f"[WARN] Could not read Windows fonts: {e}")
-                
-        elif sys.platform == "darwin":
-            # macOS fonts
-            font_dirs = [
-                "/Library/Fonts",
-                "/System/Library/Fonts",
-                os.path.expanduser("~/Library/Fonts")
-            ]
-            for font_dir in font_dirs:
-                if os.path.exists(font_dir):
-                    for f in os.listdir(font_dir):
-                        if f.endswith(('.ttf', '.otf', '.ttc')):
-                            fonts.add(f.replace('.ttf', '').replace('.otf', '').replace('.ttc', ''))
-                            
-        else:
-            # Linux fonts
-            font_dirs = [
-                "/usr/share/fonts",
-                "/usr/local/share/fonts",
-                os.path.expanduser("~/.fonts")
-            ]
-            for font_dir in font_dirs:
-                if os.path.exists(font_dir):
-                    for root, dirs, files in os.walk(font_dir):
-                        for f in files:
-                            if f.endswith(('.ttf', '.otf')):
-                                fonts.add(f.replace('.ttf', '').replace('.otf', ''))
-        
-        # Add some common fonts as fallback
-        common_fonts = ["Arial", "Times New Roman", "Courier New", "Verdana", 
-                       "Georgia", "Comic Sans MS", "Impact", "Trebuchet MS",
-                       "Komika Axis", "Bangers", "Bebas Neue"]
+                print(f"Could not read Windows fonts: {e}")
+        # Add basic fallbacks
+        common_fonts = ["Arial", "Courier New", "Verdana", "Impact", "Komika Axis", "Bangers"]
         fonts.update(common_fonts)
-        
         return sorted(list(fonts))
     
     def get_whisper_models(self):
-        """Get available Whisper models"""
         models = [
-            "tiny", "tiny.en",
-            "base", "base.en",
-            "small", "small.en",
-            "medium", "medium.en",
-            "large-v1", "large-v2", "large-v3"
+            "tiny", "tiny.en", "base", "base.en", "small", "small.en", 
+            "medium", "medium.en", "large-v1", "large-v2", "large-v3"
         ]
-        
-        # Check HF_HOME directory for downloaded models
-        hf_home = os.environ.get("HF_HOME", "")
-        if hf_home and os.path.exists(hf_home):
-            try:
-                model_dirs = os.listdir(hf_home)
-                # Add any found models
-                for d in model_dirs:
-                    if "whisper" in d.lower() or d.lower().startswith("large") or d.lower().startswith("medium"):
-                        models.append(d)
-            except:
-                pass
-        
         return models
+
+    # --- GUI Construction ---
+    def create_sidebar(self):
+        self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
+        self.sidebar_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(6, weight=1) # spacer
         
-    def create_ui(self):
-        # Main container
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        logo_label = ctk.CTkLabel(self.sidebar_frame, text="Shorts Studio", 
+                                  font=ctk.CTkFont(size=20, weight="bold"))
+        logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
         
-        # Title
-        title_label = tk.Label(main_frame, text="🎬 Shorts Automation Control Panel", 
-                               font=("Arial", 20, "bold"), bg="#667eea", fg="white", 
-                               pady=15)
-        title_label.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        # Navigation Buttons
+        self.btn_downloader = ctk.CTkButton(self.sidebar_frame, text="🎬 Downloader", 
+                                           corner_radius=8, height=40, font=ctk.CTkFont(size=14),
+                                           fg_color="transparent", hover_color=("gray70", "gray30"),
+                                           anchor="w", command=lambda: self.select_view("downloader"))
+        self.btn_downloader.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
         
-        # Notebook for tabs
-        self.notebook = ttk.Notebook(main_frame)
-        self.notebook.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
-        main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(1, weight=1)
+        self.btn_layer1 = ctk.CTkButton(self.sidebar_frame, text="🔉 L1: Audio Peaks", 
+                                           corner_radius=8, height=40, font=ctk.CTkFont(size=14),
+                                           fg_color="transparent", hover_color=("gray70", "gray30"),
+                                           anchor="w", command=lambda: self.select_view("layer1"))
+        self.btn_layer1.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
         
-        # Create tabs
-        self.create_downloader_tab()
-        self.create_layer1_tab()
-        self.create_layer2_tab()
-        self.create_layer3_tab()
+        self.btn_layer2 = ctk.CTkButton(self.sidebar_frame, text="brain L2: AI Filter", 
+                                           corner_radius=8, height=40, font=ctk.CTkFont(size=14),
+                                           fg_color="transparent", hover_color=("gray70", "gray30"),
+                                           anchor="w", command=lambda: self.select_view("layer2"))
+        self.btn_layer2.grid(row=3, column=0, padx=20, pady=5, sticky="ew")
         
-        # Button frame
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=2, column=0, columnspan=2, pady=10)
+        self.btn_layer3 = ctk.CTkButton(self.sidebar_frame, text="🎞️ L3: Render", 
+                                           corner_radius=8, height=40, font=ctk.CTkFont(size=14),
+                                           fg_color="transparent", hover_color=("gray70", "gray30"),
+                                           anchor="w", command=lambda: self.select_view("layer3"))
+        self.btn_layer3.grid(row=4, column=0, padx=20, pady=5, sticky="ew")
         
-        # Buttons
-        ttk.Button(button_frame, text="💾 Save Config", 
-                   command=self.save_config, style="Accent.TButton").pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="📂 Load Config", 
-                   command=self.load_config_dialog).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="🔄 Reset to Default", 
-                   command=self.reset_config).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="🐍 Select Python", 
-                   command=self.select_python).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="🚀 Run Layer 1", 
-                   command=lambda: self.run_layer(1)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="🚀 Run Layer 2", 
-                   command=lambda: self.run_layer(2)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="🚀 Run Layer 3", 
-                   command=lambda: self.run_layer(3)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="⚡ Run All Layers", 
-                   command=self.run_all_layers, style="Accent.TButton").pack(side=tk.LEFT, padx=5)
+        # Actions
+        action_label = ctk.CTkLabel(self.sidebar_frame, text="Configuration", 
+                                  font=ctk.CTkFont(size=12, weight="bold"), text_color="gray")
+        action_label.grid(row=7, column=0, padx=20, pady=(10, 0), sticky="w")
         
-        # Console output
-        console_frame = ttk.LabelFrame(main_frame, text="Console Output", padding="5")
-        console_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
-        main_frame.rowconfigure(3, weight=1)
+        ctk.CTkButton(self.sidebar_frame, text="💾 Save Config", command=self.save_config,
+                      fg_color="#3B82F6", hover_color="#2563EB").grid(row=8, column=0, padx=20, pady=5, sticky="ew")
+        ctk.CTkButton(self.sidebar_frame, text="📂 Load Config", command=self.load_config_dialog,
+                      fg_color="transparent", border_width=1).grid(row=9, column=0, padx=20, pady=5, sticky="ew")
         
-        self.console = scrolledtext.ScrolledText(console_frame, height=10, wrap=tk.WORD, 
-                                                  font=("Consolas", 9))
-        self.console.pack(fill=tk.BOTH, expand=True)
+        self.appearance_mode_optionemenu = ctk.CTkOptionMenu(self.sidebar_frame, values=["Dark", "Light", "System"],
+                                                             command=self.change_appearance_mode_event)
+        self.appearance_mode_optionemenu.grid(row=10, column=0, padx=20, pady=(10, 20), sticky="ew")
         
-        # Style configuration
-        style = ttk.Style()
-        style.configure("Accent.TButton", font=("Arial", 10, "bold"))
+    def create_main_area(self):
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+        self.main_container.grid_rowconfigure(0, weight=1)
+        self.main_container.grid_columnconfigure(0, weight=1)
         
-    def create_downloader_tab(self):
-        tab = ttk.Frame(self.notebook, padding="10")
-        self.notebook.add(tab, text="📥 YouTube Downloader")
+    def create_console_area(self):
+        self.console_frame = ctk.CTkFrame(self, height=200)
+        self.console_frame.grid(row=1, column=1, padx=20, pady=(0, 20), sticky="sew")
+        self.console_frame.grid_columnconfigure(0, weight=1)
+        self.console_frame.grid_rowconfigure(1, weight=1)
         
-        # Create scrollable frame
-        canvas = tk.Canvas(tab)
-        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
+        # Run All Layers Button
+        top_bar = ctk.CTkFrame(self.console_frame, fg_color="transparent")
+        top_bar.grid(row=0, column=0, padx=10, pady=(5, 0), sticky="ew")
+        top_bar.grid_columnconfigure(1, weight=1)
         
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        ctk.CTkLabel(top_bar, text="Console Output", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w")
         
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        self.btn_run_all = ctk.CTkButton(top_bar, text="⚡ RUN ALL LAYERS", fg_color="#10B981", 
+                                         hover_color="#059669", font=ctk.CTkFont(weight="bold"),
+                                         command=self.run_all_layers)
+        self.btn_run_all.grid(row=0, column=2, sticky="e")
         
-        # Download Mode Selection
-        frame1 = ttk.LabelFrame(scrollable_frame, text="Download Mode", padding="10")
-        frame1.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
+        # Console Log
+        self.console = ctk.CTkTextbox(self.console_frame, wrap="word", font=("Consolas", 12))
+        self.console.grid(row=1, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
+
+    def select_view(self, name):
+        # Update button highlighting
+        for btn in [self.btn_downloader, self.btn_layer1, self.btn_layer2, self.btn_layer3]:
+            btn.configure(fg_color="transparent")
+            
+        if name == "downloader": self.btn_downloader.configure(fg_color=("gray75", "gray25"))
+        elif name == "layer1": self.btn_layer1.configure(fg_color=("gray75", "gray25"))
+        elif name == "layer2": self.btn_layer2.configure(fg_color=("gray75", "gray25"))
+        elif name == "layer3": self.btn_layer3.configure(fg_color=("gray75", "gray25"))
         
-        self.download_mode = tk.StringVar(value="full")
+        # Show correct frame
+        for view_name, frame in self.views.items():
+            if view_name == name:
+                frame.grid(row=0, column=0, sticky="nsew")
+            else:
+                frame.grid_forget()
+
+    def change_appearance_mode_event(self, new_appearance_mode: str):
+        ctk.set_appearance_mode(new_appearance_mode)
+
+    # --- Downloader View ---
+    def create_downloader_view(self):
+        frame = ctk.CTkScrollableFrame(self.main_container, fg_color="transparent")
         
-        ttk.Radiobutton(frame1, text="📺 Full Video/VOD", variable=self.download_mode, 
-                       value="full").grid(row=0, column=0, sticky=tk.W, pady=5)
-        ttk.Radiobutton(frame1, text="✂️ Video Segment (Time Range)", variable=self.download_mode, 
-                       value="segment").grid(row=1, column=0, sticky=tk.W, pady=5)
-        ttk.Radiobutton(frame1, text="🔴 Live Stream", variable=self.download_mode, 
-                       value="live").grid(row=2, column=0, sticky=tk.W, pady=5)
+        ctk.CTkLabel(frame, text="YouTube Downloader", font=ctk.CTkFont(size=24, weight="bold")).pack(anchor="w", pady=(0, 20))
         
-        # URL Input
-        frame2 = ttk.LabelFrame(scrollable_frame, text="YouTube URL", padding="10")
-        frame2.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
+        # URL
+        url_frame = ctk.CTkFrame(frame)
+        url_frame.pack(fill="x", pady=10)
+        ctk.CTkLabel(url_frame, text="Video URL", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=15, pady=(10, 0))
+        self.youtube_url = ctk.CTkEntry(url_frame, placeholder_text="https://www.youtube.com/watch?v=...")
+        self.youtube_url.pack(fill="x", padx=15, pady=10)
         
-        tk.Label(frame2, text="URL:", font=("Arial", 10, "bold")).grid(
-            row=0, column=0, sticky=tk.W, pady=5)
-        self.youtube_url = ttk.Entry(frame2, width=60)
-        self.youtube_url.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5)
-        self.youtube_url.insert(0, "https://www.youtube.com/watch?v=...")
+        # Download Mode
+        mode_frame = ctk.CTkFrame(frame)
+        mode_frame.pack(fill="x", pady=10)
+        ctk.CTkLabel(mode_frame, text="Mode Select", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=15, pady=(10, 5))
         
-        # Time Range (for segment mode)
-        frame3 = ttk.LabelFrame(scrollable_frame, text="Time Range (for Segment Mode)", padding="10")
-        frame3.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
+        self.download_mode = ctk.StringVar(value="full")
+        ctk.CTkRadioButton(mode_frame, text="Full Video/VOD", variable=self.download_mode, value="full").pack(anchor="w", padx=15, pady=5)
+        ctk.CTkRadioButton(mode_frame, text="Video Segment (Time Range)", variable=self.download_mode, value="segment").pack(anchor="w", padx=15, pady=5)
+        ctk.CTkRadioButton(mode_frame, text="Live Stream", variable=self.download_mode, value="live").pack(anchor="w", padx=15, pady=(5, 10))
         
-        tk.Label(frame3, text="Start Time (HH:MM:SS or seconds):", font=("Arial", 10)).grid(
-            row=0, column=0, sticky=tk.W, pady=5)
-        self.start_time = ttk.Entry(frame3, width=30)
-        self.start_time.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5)
+        # Time Options
+        time_frame = ctk.CTkFrame(frame)
+        time_frame.pack(fill="x", pady=10)
+        
+        ctk.CTkLabel(time_frame, text="Start Time (HH:MM:SS)", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, padx=15, pady=(10, 0), sticky="w")
+        self.start_time = ctk.CTkEntry(time_frame)
         self.start_time.insert(0, "0:00:00")
+        self.start_time.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="ew")
         
-        tk.Label(frame3, text="End Time (HH:MM:SS or seconds, optional):", font=("Arial", 10)).grid(
-            row=2, column=0, sticky=tk.W, pady=5)
-        self.end_time = ttk.Entry(frame3, width=30)
-        self.end_time.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=5)
-        self.end_time.insert(0, "")
+        ctk.CTkLabel(time_frame, text="End Time (HH:MM:SS) (optional)", font=ctk.CTkFont(weight="bold")).grid(row=0, column=1, padx=15, pady=(10, 0), sticky="w")
+        self.end_time = ctk.CTkEntry(time_frame)
+        self.end_time.grid(row=1, column=1, padx=15, pady=(0, 10), sticky="ew")
         
-        # Live Stream Duration (for live mode)
-        frame4 = ttk.LabelFrame(scrollable_frame, text="Live Stream Options", padding="10")
-        frame4.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
-        
-        tk.Label(frame4, text="Max Duration (seconds, optional):", font=("Arial", 10)).grid(
-            row=0, column=0, sticky=tk.W, pady=5)
-        self.live_duration = ttk.Entry(frame4, width=30)
-        self.live_duration.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5)
-        self.live_duration.insert(0, "")
-        
-        tk.Label(frame4, text="Leave empty to record entire stream", 
-                font=("Arial", 9, "italic"), foreground="gray").grid(
-            row=2, column=0, sticky=tk.W, pady=5)
+        time_frame.grid_columnconfigure(0, weight=1)
+        time_frame.grid_columnconfigure(1, weight=1)
         
         # Download Button
-        btn_frame = ttk.Frame(scrollable_frame)
-        btn_frame.grid(row=4, column=0, pady=20)
+        btn = ctk.CTkButton(frame, text="📥 Download to vod.mp4", font=ctk.CTkFont(size=15, weight="bold"),
+                            height=45, fg_color="#3B82F6", hover_color="#2563EB", command=self.start_download)
+        btn.pack(pady=20)
         
-        ttk.Button(btn_frame, text="📥 Download to vod.mp4", 
-                  command=self.start_download, style="Accent.TButton").pack(pady=10)
+        return frame
+
+    # --- Helper for UI generation ---
+    def add_entry_row(self, parent, label_text, layer, key, row):
+        ctk.CTkLabel(parent, text=label_text).grid(row=row, column=0, padx=15, pady=10, sticky="w")
+        entry = ctk.CTkEntry(parent, width=150)
+        entry.insert(0, str(self.config[layer][key]))
+        entry.grid(row=row, column=1, padx=15, pady=10, sticky="e")
+        setattr(self, f"{layer}_{key}", entry)
         
-        # Info
-        info_frame = ttk.LabelFrame(scrollable_frame, text="ℹ️ Information", padding="10")
-        info_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
+    # --- Layer 1 View ---
+    def create_layer1_view(self):
+        frame = ctk.CTkScrollableFrame(self.main_container, fg_color="transparent")
         
-        info_text = """• Downloads saved to downloads/ folder with timestamps
-• Also copied to vod.mp4 for immediate processing
-• Make sure yt-dlp is installed: pip install yt-dlp
-• Time format examples: 1:30:00 (1h 30m), 90:00 (90 minutes), 5400 (seconds)
-• For live streams, the download will wait for the stream to start
-• Segment mode works with both live streams and VODs"""
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(header, text="Layer 1: Audio Peak Detection", font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
+        ctk.CTkButton(header, text="▶ Run Layer 1", width=120, command=lambda: self.run_layer(1)).pack(side="right")
         
-        tk.Label(info_frame, text=info_text, justify=tk.LEFT, 
-                font=("Arial", 9)).grid(row=0, column=0, sticky=tk.W)
+        # Params 1
+        p1 = ctk.CTkFrame(frame)
+        p1.pack(fill="x", pady=10)
+        p1.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(p1, text="Audio Detection", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=2, padx=15, pady=10, sticky="w")
+        self.add_entry_row(p1, "Sample Rate (Hz)", "layer1", "sample_rate", 1)
+        self.add_entry_row(p1, "Window Size (s)", "layer1", "window", 2)
+        self.add_entry_row(p1, "Hop Size (s)", "layer1", "hop", 3)
+        self.add_entry_row(p1, "Sensitivity Multiplier", "layer1", "sensitivity", 4)
         
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        # Params 2
+        p2 = ctk.CTkFrame(frame)
+        p2.pack(fill="x", pady=10)
+        p2.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(p2, text="Clip Timings", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=2, padx=15, pady=10, sticky="w")
+        self.add_entry_row(p2, "Pre-buffer (s)", "layer1", "pre_buffer", 1)
+        self.add_entry_row(p2, "Post-buffer (s)", "layer1", "post_buffer", 2)
+        self.add_entry_row(p2, "Min Clip Duration (s)", "layer1", "min_clip", 3)
+        self.add_entry_row(p2, "Max Clip Duration (s)", "layer1", "max_clip", 4)
+        self.add_entry_row(p2, "Merge Window (s)", "layer1", "merge_window", 5)
         
-    def create_layer1_tab(self):
-        tab = ttk.Frame(self.notebook, padding="10")
-        self.notebook.add(tab, text="Layer 1: Audio Peak Detection")
+        return frame
+
+    # --- Layer 2 View ---
+    def create_layer2_view(self):
+        frame = ctk.CTkScrollableFrame(self.main_container, fg_color="transparent")
         
-        # Create scrollable frame
-        canvas = tk.Canvas(tab)
-        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(header, text="Layer 2: Whisper Filtering", font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
+        ctk.CTkButton(header, text="▶ Run Layer 2", width=120, command=lambda: self.run_layer(2)).pack(side="right")
         
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        p1 = ctk.CTkFrame(frame)
+        p1.pack(fill="x", pady=10)
+        ctk.CTkLabel(p1, text="Keyword Settings", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=15, pady=(10, 0))
         
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Audio Detection Parameters
-        frame1 = ttk.LabelFrame(scrollable_frame, text="Audio Detection Parameters", padding="10")
-        frame1.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
-        
-        row = 0
-        self.create_entry(frame1, "Sample Rate (Hz):", "layer1", "sample_rate", row)
-        row += 1
-        self.create_entry(frame1, "Window Size (seconds):", "layer1", "window", row)
-        row += 1
-        self.create_entry(frame1, "Hop Size (seconds):", "layer1", "hop", row)
-        row += 1
-        self.create_entry(frame1, "Sensitivity Multiplier:", "layer1", "sensitivity", row)
-        
-        # Clip Timing Parameters
-        frame2 = ttk.LabelFrame(scrollable_frame, text="Clip Timing Parameters", padding="10")
-        frame2.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
-        
-        row = 0
-        self.create_entry(frame2, "Pre-buffer (seconds):", "layer1", "pre_buffer", row)
-        row += 1
-        self.create_entry(frame2, "Post-buffer (seconds):", "layer1", "post_buffer", row)
-        row += 1
-        self.create_entry(frame2, "Min Clip Duration (seconds):", "layer1", "min_clip", row)
-        row += 1
-        self.create_entry(frame2, "Max Clip Duration (seconds):", "layer1", "max_clip", row)
-        row += 1
-        self.create_entry(frame2, "Merge Window (seconds):", "layer1", "merge_window", row)
-        
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-    def create_layer2_tab(self):
-        tab = ttk.Frame(self.notebook, padding="10")
-        self.notebook.add(tab, text="Layer 2: Content Filtering")
-        
-        # Create scrollable frame
-        canvas = tk.Canvas(tab)
-        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Keyword Detection
-        frame1 = ttk.LabelFrame(scrollable_frame, text="Keyword Detection", padding="10")
-        frame1.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
-        
-        tk.Label(frame1, text="Keywords (comma-separated):", font=("Arial", 10, "bold")).grid(
-            row=0, column=0, sticky=tk.W, pady=5)
-        self.layer2_keywords = tk.Text(frame1, height=5, width=60, wrap=tk.WORD)
-        self.layer2_keywords.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5)
+        self.layer2_keywords = ctk.CTkTextbox(p1, height=100)
+        self.layer2_keywords.pack(fill="x", padx=15, pady=10)
         self.layer2_keywords.insert("1.0", self.config["layer2"]["keywords"])
         
-        tk.Label(frame1, text="Keyword Threshold (min count):", font=("Arial", 10)).grid(
-            row=2, column=0, sticky=tk.W, pady=5)
-        self.layer2_kw_threshold = ttk.Entry(frame1)
-        self.layer2_kw_threshold.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=5)
-        self.layer2_kw_threshold.insert(0, str(self.config["layer2"]["kw_threshold"]))
+        grid_f = ctk.CTkFrame(p1, fg_color="transparent")
+        grid_f.pack(fill="x")
+        grid_f.grid_columnconfigure(1, weight=1)
+        self.add_entry_row(grid_f, "Keyword Threshold", "layer2", "kw_threshold", 0)
         
-        # Visual Analysis
-        frame2 = ttk.LabelFrame(scrollable_frame, text="Visual Analysis Parameters", padding="10")
-        frame2.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
+        p2 = ctk.CTkFrame(frame)
+        p2.pack(fill="x", pady=10)
+        p2.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(p2, text="Visual Analysis", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=2, padx=15, pady=10, sticky="w")
+        self.add_entry_row(p2, "Sample FPS", "layer2", "sample_fps", 1)
+        self.add_entry_row(p2, "Frame Diff Threshold", "layer2", "frame_diff_thresh", 2)
+        self.add_entry_row(p2, "Visual Target Threshold", "layer2", "vis_threshold", 3)
         
-        row = 0
-        self.create_entry(frame2, "Sample FPS:", "layer2", "sample_fps", row)
-        row += 1
-        self.create_entry(frame2, "Frame Difference Threshold:", "layer2", "frame_diff_thresh", row)
-        row += 1
-        self.create_entry(frame2, "Visual Score Threshold:", "layer2", "vis_threshold", row)
+        return frame
+
+    # --- Layer 3 View ---
+    def create_layer3_view(self):
+        frame = ctk.CTkScrollableFrame(self.main_container, fg_color="transparent")
         
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(header, text="Layer 3: Render & Subtitles", font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
+        ctk.CTkButton(header, text="▶ Run Layer 3", width=120, command=lambda: self.run_layer(3)).pack(side="right")
         
-    def create_layer3_tab(self):
-        tab = ttk.Frame(self.notebook, padding="10")
-        self.notebook.add(tab, text="Layer 3: Rendering & Subtitles")
+        # Typography & Subtitles
+        p1 = ctk.CTkFrame(frame)
+        p1.pack(fill="x", pady=10)
+        p1.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(p1, text="Typography & Whisper", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=2, padx=15, pady=10, sticky="w")
         
-        # Create scrollable frame
-        canvas = tk.Canvas(tab)
-        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Model Settings
-        frame1 = ttk.LabelFrame(scrollable_frame, text="Transcription Model", padding="10")
-        frame1.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
-        
-        tk.Label(frame1, text="Model Name:", font=("Arial", 10)).grid(
-            row=0, column=0, sticky=tk.W, pady=5, padx=5)
-        self.layer3_model_name = ttk.Combobox(frame1, values=self.available_models, width=27)
-        self.layer3_model_name.grid(row=0, column=1, sticky=(tk.W, tk.E), pady=5, padx=5)
+        ctk.CTkLabel(p1, text="Transcription Model").grid(row=1, column=0, padx=15, pady=10, sticky="w")
+        self.layer3_model_name = ctk.CTkComboBox(p1, values=self.available_models, width=200)
         self.layer3_model_name.set(self.config["layer3"]["model_name"])
+        self.layer3_model_name.grid(row=1, column=1, padx=15, pady=10, sticky="e")
         
-        # Font Settings
-        frame2 = ttk.LabelFrame(scrollable_frame, text="Font Settings", padding="10")
-        frame2.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
-        
-        row = 0
-        tk.Label(frame2, text="Font Name:", font=("Arial", 10)).grid(
-            row=row, column=0, sticky=tk.W, pady=5, padx=5)
-        self.layer3_font_name = ttk.Combobox(frame2, values=self.available_fonts, width=27)
-        self.layer3_font_name.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5, padx=5)
+        ctk.CTkLabel(p1, text="Font Family").grid(row=2, column=0, padx=15, pady=10, sticky="w")
+        self.layer3_font_name = ctk.CTkComboBox(p1, values=self.available_fonts, width=200)
         self.layer3_font_name.set(self.config["layer3"]["font_name"])
+        self.layer3_font_name.grid(row=2, column=1, padx=15, pady=10, sticky="e")
         
-        row += 1
-        self.create_entry(frame2, "Font Size:", "layer3", "font_size", row)
-        row += 1
+        self.add_entry_row(p1, "Font Size", "layer3", "font_size", 3)
         
-        tk.Label(frame2, text="Bold:", font=("Arial", 10)).grid(row=row, column=0, sticky=tk.W, pady=5)
-        self.layer3_font_bold = ttk.Checkbutton(frame2)
-        self.layer3_font_bold.grid(row=row, column=1, sticky=tk.W, pady=5)
-        if self.config["layer3"]["font_bold"]:
-            self.layer3_font_bold.state(['selected'])
-        row += 1
+        ctk.CTkLabel(p1, text="Bold Typography").grid(row=4, column=0, padx=15, pady=10, sticky="w")
+        self.layer3_font_bold_var = ctk.BooleanVar(value=self.config["layer3"]["font_bold"])
+        self.layer3_font_bold = ctk.CTkSwitch(p1, text="", variable=self.layer3_font_bold_var)
+        self.layer3_font_bold.grid(row=4, column=1, padx=15, pady=10, sticky="e")
         
-        self.create_entry(frame2, "Outline Width:", "layer3", "outline_width", row)
-        row += 1
-        self.create_entry(frame2, "Primary Color (ASS format):", "layer3", "primary_color", row)
-        row += 1
-        self.create_entry(frame2, "Outline Color (ASS format):", "layer3", "outline_color", row)
-        row += 1
-        self.create_entry(frame2, "Alignment (1-9):", "layer3", "alignment", row)
-        row += 1
-        self.create_entry(frame2, "Margin Vertical:", "layer3", "margin_v", row)
-        row += 1
-        self.create_entry(frame2, "Max Text Length (chars):", "layer3", "max_text_length", row)
+        self.add_entry_row(p1, "Outline Width", "layer3", "outline_width", 5)
+        self.add_entry_row(p1, "Primary Color (ASS)", "layer3", "primary_color", 6)
+        self.add_entry_row(p1, "Outline Color (ASS)", "layer3", "outline_color", 7)
+        self.add_entry_row(p1, "Alignment (1-9)", "layer3", "alignment", 8)
+        self.add_entry_row(p1, "Margin Vertical", "layer3", "margin_v", 9)
+        self.add_entry_row(p1, "Max Text Length", "layer3", "max_text_length", 10)
         
-        # Audio Settings
-        frame3 = ttk.LabelFrame(scrollable_frame, text="Audio Settings", padding="10")
-        frame3.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
+        # Audio
+        p2 = ctk.CTkFrame(frame)
+        p2.pack(fill="x", pady=10)
+        p2.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(p2, text="Mixer & Audio Ducking", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=2, padx=15, pady=10, sticky="w")
         
-        self.create_entry(frame3, "Audio Boost (1.0 = normal, 1.5 = 50% louder):", "layer3", "audio_boost", 0)
-        
-        # Background Music Settings
-        frame4 = ttk.LabelFrame(scrollable_frame, text="Background Music & Ducking", padding="10")
-        frame4.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
-        
-        tk.Label(frame4, text="BGM Path:", font=("Arial", 10)).grid(row=0, column=0, sticky=tk.W, pady=5)
-        bgm_frame = ttk.Frame(frame4)
-        bgm_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5)
-        
-        self.layer3_bgm_path = ttk.Entry(bgm_frame, width=40)
-        self.layer3_bgm_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        ctk.CTkLabel(p2, text="BGM Target File").grid(row=1, column=0, padx=15, pady=10, sticky="w")
+        file_f = ctk.CTkFrame(p2, fg_color="transparent")
+        file_f.grid(row=1, column=1, padx=15, pady=10, sticky="e")
+        self.layer3_bgm_path = ctk.CTkEntry(file_f, width=200)
         self.layer3_bgm_path.insert(0, self.config["layer3"]["bgm_path"])
+        self.layer3_bgm_path.pack(side="left", padx=(0, 5))
+        ctk.CTkButton(file_f, text="Browse", width=60, command=self.browse_bgm).pack(side="left")
         
-        self.browse_bgm_btn = ttk.Button(bgm_frame, text="Browse", command=self.browse_bgm)
-        self.browse_bgm_btn.pack(side=tk.LEFT)
+        self.add_entry_row(p2, "Vocals Boost Multiplier", "layer3", "audio_boost", 2)
+        self.add_entry_row(p2, "BGM Main Volume", "layer3", "bgm_volume", 3)
+        self.add_entry_row(p2, "Ducking Threshold", "layer3", "ducking_threshold", 4)
+        self.add_entry_row(p2, "Ducking Ratio", "layer3", "ducking_ratio", 5)
+        self.add_entry_row(p2, "Ducking Attack (ms)", "layer3", "ducking_attack", 6)
+        self.add_entry_row(p2, "Ducking Release (ms)", "layer3", "ducking_release", 7)
         
-        row = 2
-        self.create_entry(frame4, "BGM Volume (0.0-1.0):", "layer3", "bgm_volume", row)
-        row += 1
-        self.create_entry(frame4, "Ducking Threshold:", "layer3", "ducking_threshold", row)
-        row += 1
-        self.create_entry(frame4, "Ducking Ratio:", "layer3", "ducking_ratio", row)
-        row += 1
-        self.create_entry(frame4, "Ducking Attack (ms):", "layer3", "ducking_attack", row)
-        row += 1
-        self.create_entry(frame4, "Ducking Release (ms):", "layer3", "ducking_release", row)
-        
-        # ---- NEW BGM MODE OPTIONS ----
-        tk.Label(frame4, text="BGM Modes:", font=("Arial", 10, "bold")).grid(
-            row=row, column=0, sticky=tk.W, pady=(15,5)
-        )
-        row += 1
+        return frame
 
-        # Randomize BGM checkbox
-        self.layer3_randomize_bgm = tk.BooleanVar(value=self.config["layer3"].get("randomize_bgm", False))
-        chk_random = ttk.Checkbutton(frame4, text="Randomize BGM per clip", 
-                                     variable=self.layer3_randomize_bgm,
-                                     command=self.update_bgm_state)
-        chk_random.grid(row=row, column=0, sticky=tk.W, pady=5)
-        row += 1
-
-        # Disable BGM checkbox (no music)
-        self.layer3_disable_bgm = tk.BooleanVar(value=self.config["layer3"].get("disable_bgm", False))
-        chk_disable = ttk.Checkbutton(frame4, text="Render WITHOUT BGM", 
-                                      variable=self.layer3_disable_bgm,
-                                      command=self.update_bgm_state)
-        chk_disable.grid(row=row, column=0, sticky=tk.W, pady=5)
-        row += 1
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-    def create_entry(self, parent, label_text, layer, key, row):
-        tk.Label(parent, text=label_text, font=("Arial", 10)).grid(
-            row=row, column=0, sticky=tk.W, pady=5, padx=5)
-        entry = ttk.Entry(parent, width=30)
-        entry.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5, padx=5)
-        entry.insert(0, str(self.config[layer][key]))
-        setattr(self, f"{layer}_{key}", entry)
-        parent.columnconfigure(1, weight=1)
-        
     def browse_bgm(self):
         filename = filedialog.askopenfilename(
-            title="Select Background Music",
-            filetypes=[("Audio Files", "*.mp3 *.wav *.m4a"), ("All Files", "*.*")]
+            title="Select BGM", 
+            filetypes=[("Audio", "*.mp3 *.wav *.m4a")]
         )
         if filename:
             self.layer3_bgm_path.delete(0, tk.END)
             self.layer3_bgm_path.insert(0, filename)
-            
-    def update_bgm_state(self):
-        """Enable/disable BGM path selection based on mode"""
-        random_mode = bool(self.layer3_randomize_bgm.get())
-        no_bgm = bool(self.layer3_disable_bgm.get())
 
-        # No BGM = everything disabled except checkbox
-        if no_bgm:
-            # disable random mode visually
-            self.layer3_randomize_bgm.set(False)
-            # disable bgm path entry and browse button
-            try:
-                self.layer3_bgm_path.config(state="disabled")
-                self.browse_bgm_btn.config(state="disabled")
-            except Exception:
-                pass
-            return
-
-        # Random mode disables manual BGM path
-        if random_mode:
-            try:
-                self.layer3_bgm_path.config(state="disabled")
-                self.browse_bgm_btn.config(state="disabled")
-            except Exception:
-                pass
-        else:
-            try:
-                self.layer3_bgm_path.config(state="normal")
-                self.browse_bgm_btn.config(state="normal")
-            except Exception:
-                pass
-
+    # --- Save/Load & State Management ---
     def collect_config(self):
-        """Collect all values from UI"""
-        config = {
-            "layer1": {
-                "sample_rate": int(self.layer1_sample_rate.get()),
-                "window": float(self.layer1_window.get()),
-                "hop": float(self.layer1_hop.get()),
-                "sensitivity": float(self.layer1_sensitivity.get()),
-                "pre_buffer": float(self.layer1_pre_buffer.get()),
-                "post_buffer": float(self.layer1_post_buffer.get()),
-                "min_clip": float(self.layer1_min_clip.get()),
-                "max_clip": float(self.layer1_max_clip.get()),
-                "merge_window": float(self.layer1_merge_window.get())
-            },
-            "layer2": {
-                "keywords": self.layer2_keywords.get("1.0", tk.END).strip(),
-                "sample_fps": int(self.layer2_sample_fps.get()),
-                "frame_diff_thresh": float(self.layer2_frame_diff_thresh.get()),
-                "kw_threshold": int(self.layer2_kw_threshold.get()),
-                "vis_threshold": float(self.layer2_vis_threshold.get())
-            },
-            "layer3": {
-                "model_name": self.layer3_model_name.get(),
-                "font_name": self.layer3_font_name.get(),
-                "font_size": int(self.layer3_font_size.get()),
-                "font_bold": 'selected' in self.layer3_font_bold.state(),
-                "outline_width": int(self.layer3_outline_width.get()),
-                "primary_color": self.layer3_primary_color.get(),
-                "outline_color": self.layer3_outline_color.get(),
-                "alignment": int(self.layer3_alignment.get()),
-                "margin_v": int(self.layer3_margin_v.get()),
-                "max_text_length": int(self.layer3_max_text_length.get()),
-                "bgm_volume": float(self.layer3_bgm_volume.get()),
-                "bgm_path": self.layer3_bgm_path.get(),
-                "ducking_threshold": float(self.layer3_ducking_threshold.get()),
-                "ducking_ratio": int(self.layer3_ducking_ratio.get()),
-                "ducking_attack": int(self.layer3_ducking_attack.get()),
-                "ducking_release": int(self.layer3_ducking_release.get()),
-                "audio_boost": float(self.layer3_audio_boost.get()),
-                "randomize_bgm": bool(self.layer3_randomize_bgm.get()),
-                "disable_bgm": bool(self.layer3_disable_bgm.get())
+        try:
+            config = {
+                "layer1": {
+                    "sample_rate": int(self.layer1_sample_rate.get()),
+                    "window": float(self.layer1_window.get()),
+                    "hop": float(self.layer1_hop.get()),
+                    "sensitivity": float(self.layer1_sensitivity.get()),
+                    "pre_buffer": float(self.layer1_pre_buffer.get()),
+                    "post_buffer": float(self.layer1_post_buffer.get()),
+                    "min_clip": float(self.layer1_min_clip.get()),
+                    "max_clip": float(self.layer1_max_clip.get()),
+                    "merge_window": float(self.layer1_merge_window.get())
+                },
+                "layer2": {
+                    "keywords": self.layer2_keywords.get("1.0", tk.END).strip(),
+                    "sample_fps": int(self.layer2_sample_fps.get()),
+                    "frame_diff_thresh": float(self.layer2_frame_diff_thresh.get()),
+                    "kw_threshold": int(self.layer2_kw_threshold.get()),
+                    "vis_threshold": float(self.layer2_vis_threshold.get())
+                },
+                "layer3": {
+                    "model_name": self.layer3_model_name.get(),
+                    "font_name": self.layer3_font_name.get(),
+                    "font_size": int(self.layer3_font_size.get()),
+                    "font_bold": self.layer3_font_bold_var.get(),
+                    "outline_width": int(self.layer3_outline_width.get()),
+                    "primary_color": self.layer3_primary_color.get(),
+                    "outline_color": self.layer3_outline_color.get(),
+                    "alignment": int(self.layer3_alignment.get()),
+                    "margin_v": int(self.layer3_margin_v.get()),
+                    "max_text_length": int(self.layer3_max_text_length.get()),
+                    "bgm_volume": float(self.layer3_bgm_volume.get()),
+                    "bgm_path": self.layer3_bgm_path.get(),
+                    "ducking_threshold": float(self.layer3_ducking_threshold.get()),
+                    "ducking_ratio": int(self.layer3_ducking_ratio.get()),
+                    "ducking_attack": int(self.layer3_ducking_attack.get()),
+                    "ducking_release": int(self.layer3_ducking_release.get()),
+                    "audio_boost": float(self.layer3_audio_boost.get())
+                }
             }
-        }
-        return config
-        
+            return config
+        except Exception as e:
+            self.log(f"❌ Error collecting config values: {e}")
+            return None
+
     def save_config(self):
+        config = self.collect_config()
+        if not config: return
         try:
-            config = self.collect_config()
-            with open(self.config_file, 'w', encoding='utf-8') as f:
+            with open(self.config_file, 'w') as f:
                 json.dump(config, f, indent=4)
-            self.log("[OK] Configuration saved successfully!")
-            messagebox.showinfo("Success", "Configuration saved!")
+            self.log("✅ Configuration saved successfully!")
+            # Avoid annoying popups for minor actions in custom UIs. Console is enough.
         except Exception as e:
-            self.log(f"[ERROR] Error saving config: {e}")
-            messagebox.showerror("Error", f"Failed to save config: {e}")
-            
+            self.log(f"❌ Error saving config: {e}")
+
     def load_config_silent(self):
-        """Load config without logging (called before UI is created)"""
         try:
             if self.config_file.exists():
-                with open(self.config_file, 'r', encoding='utf-8') as f:
+                with open(self.config_file, 'r') as f:
                     loaded_config = json.load(f)
-                    # Merge with defaults to ensure all keys exist
-                    self.merge_configs(loaded_config)
+                    for layer in self.config:
+                        if layer in loaded_config:
+                            for key in self.config[layer]:
+                                if key in loaded_config[layer]:
+                                    self.config[layer][key] = loaded_config[layer][key]
         except Exception:
-            pass  # Silently use defaults
-    
-    def merge_configs(self, loaded_config):
-        """Merge loaded config with defaults to ensure all keys exist"""
-        for layer in self.config:
-            if layer in loaded_config:
-                for key in self.config[layer]:
-                    if key in loaded_config[layer]:
-                        self.config[layer][key] = loaded_config[layer][key]
-        # Ensure new keys exist
-        self.config["layer3"].setdefault("randomize_bgm", False)
-        self.config["layer3"].setdefault("disable_bgm", False)
-            
-    def load_config(self):
-        """Load config with logging (called after UI is created)"""
-        try:
-            if self.config_file.exists():
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    loaded_config = json.load(f)
-                    self.merge_configs(loaded_config)
-                self.log("[OK] Configuration loaded successfully!")
-        except Exception as e:
-            self.log(f"[WARN] Using default configuration: {e}")
-            
+            pass
+
     def load_config_dialog(self):
-        filename = filedialog.askopenfilename(
-            title="Load Configuration",
-            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
-        )
+        filename = filedialog.askopenfilename(title="Load Config", filetypes=[("JSON Files", "*.json")])
         if filename:
             try:
-                with open(filename, 'r', encoding='utf-8') as f:
-                    self.config = json.load(f)
-                self.log(f"[OK] Configuration loaded from {filename}")
-                messagebox.showinfo("Success", "Configuration loaded! Please restart to apply.")
+                with open(filename, 'r') as f:
+                    new_conf = json.load(f)
+                with open(self.config_file, 'w') as f:
+                    json.dump(new_conf, f, indent=4)
+                self.log(f"✅ Configuration replaced from {filename}. Please restart to apply.")
+                messagebox.showinfo("Restart Required", "Config loaded! Please close and reopen the app.")
             except Exception as e:
-                self.log(f"[ERROR] Error loading config: {e}")
-                messagebox.showerror("Error", f"Failed to load config: {e}")
-                
-    def reset_config(self):
-        if messagebox.askyesno("Reset Configuration", 
-                               "Are you sure you want to reset all settings to default?"):
-            # Reset to defaults and restart app
-            self.root.destroy()
-            root = tk.Tk()
-            app = ShortsAutomationGUI(root)
-            root.mainloop()
-            
-    def print_console(self, message):
-        """Internal print that doesn't spam the GUI console formatting"""
-        try:
-            self.console.insert(tk.END, message + "\n")
-            self.console.see(tk.END)
-            self.console.update()
-        except Exception:
-            # if console not ready, fallback to stdout
-            print(message)
-    
+                self.log(f"❌ Error loading config: {e}")
+
+    # --- Actions ---
     def log(self, message):
-        self.print_console(message)
-    
-    def select_python(self):
-        """Let user select Python executable manually"""
-        global VENV_PYTHON
-        
-        filename = filedialog.askopenfilename(
-            title="Select Python Executable",
-            filetypes=[("Python Executable", "python.exe"), ("All Files", "*.*")]
-        )
-        
-        if filename:
-            VENV_PYTHON = filename
-            self.log(f"[OK] Python set to: {VENV_PYTHON}")
-            messagebox.showinfo("Success", f"Python executable set to:\n{VENV_PYTHON}")
-    
+        self.console.insert(tk.END, message + "\n")
+        self.console.see(tk.END)
+        self.update()
+
+    def _run_process(self, cmd_args, success_msg):
+        try:
+            process = subprocess.Popen(cmd_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='replace')
+            for line in process.stdout:
+                self.log(line.rstrip())
+            process.wait()
+            if process.returncode == 0 or process.returncode == 3221226505:
+                self.log(f"\n✅ {success_msg}")
+            else:
+                self.log(f"\n❌ Process failed with return code {process.returncode}")
+        except Exception as e:
+            self.log(f"\n❌ Execution Error: {e}")
+
     def start_download(self):
-        """Start YouTube download based on selected mode"""
         url = self.youtube_url.get().strip()
         mode = self.download_mode.get()
+        if not url: return self.log("❌ Enter a valid URL!")
         
-        if not url or url == "https://www.youtube.com/watch?v=...":
-            messagebox.showerror("Error", "Please enter a valid YouTube URL!")
-            return
+        self.log(f"\n{'='*40}\n📥 Downloading: {mode}\n{'='*40}")
         
-        self.log(f"\n{'='*60}")
-        self.log(f"[INFO] Starting Download...")
-        self.log(f"[INFO] Mode: {mode}")
-        self.log(f"[INFO] URL: {url}")
-        self.log(f"{'='*60}\n")
-        
-        def run():
-            try:
-                # Use venv Python if available
-                python_exe = VENV_PYTHON if VENV_PYTHON else sys.executable or "python"
-                
-                if mode == "full":
-                    # Full video download
-                    cmd = [
-                        python_exe, str(PROJECT_ROOT / "downloader.py"),
-                        url
-                    ]
-                elif mode == "segment":
-                    # Segment download
-                    start = self.start_time.get().strip()
-                    end = self.end_time.get().strip()
-                    
-                    if not start:
-                        self.log("[ERROR] Please enter a start time!")
-                        return
-                    
-                    cmd = [python_exe, str(PROJECT_ROOT / "downloader.py"), url, start]
-                    if end:
-                        cmd.append(end)
-                        
-                elif mode == "live":
-                    # Live stream download
-                    duration = self.live_duration.get().strip()
-                    cmd = [python_exe, str(PROJECT_ROOT / "downloader.py"), url, "--live"]
-                    if duration:
-                        cmd.append(duration)
-                
-                # Run download (ensure correct cwd/env and UTF-8)
-                env = os.environ.copy()
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding='utf-8',
-                    bufsize=1,
-                    cwd=str(PROJECT_ROOT),
-                    env=env,
-                    errors='replace'
-                )
-                
-                for line in process.stdout:
-                    self.log(line.rstrip())
-                    
-                process.wait()
-                
-                if process.returncode == 0:
-                    self.log(f"\n[OK] Download completed successfully!")
-                    self.log(f"[OK] Saved to downloads/ folder")
-                    self.log(f"[OK] Copied to vod.mp4 for processing")
-                    messagebox.showinfo("Success", "Video downloaded!\n\nSaved to: downloads/\nCopied to: vod.mp4")
-                else:
-                    self.log(f"\n[ERROR] Download failed!")
-                    
-            except Exception as e:
-                self.log(f"\n[ERROR] Exception: {e}")
-                messagebox.showerror("Error", f"Download failed: {e}")
-        
-        thread = threading.Thread(target=run)
-        thread.daemon = True
-        thread.start()
-        
+        cmd = [sys.executable, "downloader.py", url]
+        if mode == "segment":
+            start, end = self.start_time.get().strip(), self.end_time.get().strip()
+            if not start: return self.log("❌ Need start time!")
+            cmd.append(start)
+            if end: cmd.append(end)
+        elif mode == "live":
+            cmd.append("--live")
+            
+        threading.Thread(target=self._run_process, args=(cmd, "Download Done!"), daemon=True).start()
+
     def run_layer(self, layer_num):
-        # Save config first (GUI writes config.json which layer reads)
         self.save_config()
-        self.log(f"\n{'='*60}")
-        self.log(f"[INFO] Starting Layer {layer_num}...")
-        self.log(f"{'='*60}\n")
-        
-        def run():
-            try:
-                script_name = PROJECT_ROOT / f"layer{layer_num}.py"
-                
-                # Use venv Python if available, otherwise system Python
-                python_exe = VENV_PYTHON if VENV_PYTHON else sys.executable or "python"
-                
-                cmd = [python_exe, str(script_name)]
-                
-                env = os.environ.copy()
-                # ensure HF_HOME and other envs are passed; GUI trusts layer to read config
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding='utf-8',
-                    bufsize=1,
-                    cwd=str(PROJECT_ROOT),
-                    env=env,
-                    errors='replace'
-                )
-                
-                for line in process.stdout:
-                    self.log(line.rstrip())
-                    
-                process.wait()
-                
-                # CRITICAL FIX: Ignore CUDA cleanup crash (Windows error code 3221226505 = 0xC0000409)
-                # This error occurs during subprocess termination when CUDA cleanup conflicts with process exit
-                # The actual work is complete, so we treat it as success
-                if process.returncode == 0 or process.returncode == 3221226505:
-                    self.log(f"\n[OK] Layer {layer_num} completed successfully!")
-                else:
-                    self.log(f"\n[ERROR] Layer {layer_num} failed with return code {process.returncode}")
-                    
-            except Exception as e:
-                self.log(f"\n[ERROR] Error running Layer {layer_num}: {e}")
-                
-        thread = threading.Thread(target=run)
-        thread.daemon = True
-        thread.start()
-        
+        self.log(f"\n{'='*40}\n🚀 Running Layer {layer_num}\n{'='*40}")
+        cmd = [sys.executable, f"layer{layer_num}.py"]
+        threading.Thread(target=self._run_process, args=(cmd, f"Layer {layer_num} Completed!"), daemon=True).start()
+
     def run_all_layers(self):
         self.save_config()
-        self.log(f"\n{'='*60}")
-        self.log("[INFO] Starting ALL LAYERS...")
-        self.log(f"{'='*60}\n")
-        
-        def run():
-            # Use venv Python if available
-            python_exe = VENV_PYTHON if VENV_PYTHON else sys.executable or "python"
-            env = os.environ.copy()
-            
+        def runner():
             for layer in [1, 2, 3]:
+                self.log(f"\n{'='*40}\n🚀 LAYER {layer}\n{'='*40}")
                 try:
-                    self.log(f"\n[INFO] Running Layer {layer}...\n")
-                    script_name = PROJECT_ROOT / f"layer{layer}.py"
-                    cmd = [python_exe, str(script_name)]
-                    process = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        encoding='utf-8',
-                        bufsize=1,
-                        cwd=str(PROJECT_ROOT),
-                        env=env,
-                        errors='replace'
-                    )
-                    
-                    for line in process.stdout:
-                        self.log(line.rstrip())
-                        
-                    process.wait()
-                    
-                    # CRITICAL FIX: Ignore CUDA cleanup crash for Layer 2
-                    if process.returncode != 0 and process.returncode != 3221226505:
-                        self.log(f"\n[ERROR] Layer {layer} failed! Stopping execution.")
+                    p = subprocess.Popen([sys.executable, f"layer{layer}.py"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='replace')
+                    for line in p.stdout: self.log(line.rstrip())
+                    p.wait()
+                    if p.returncode != 0 and p.returncode != 3221226505:
+                        self.log(f"\n❌ HALTING. Layer {layer} failed!")
                         return
-                        
                 except Exception as e:
-                    self.log(f"\n[ERROR] Exception in Layer {layer}: {e}")
-                    return
-                    
-            self.log(f"\n{'='*60}")
-            self.log("[OK] ALL LAYERS COMPLETED SUCCESSFULLY!")
-            self.log(f"{'='*60}\n")
-            
-        thread = threading.Thread(target=run)
-        thread.daemon = True
-        thread.start()
-
-def main():
-    root = tk.Tk()
-    app = ShortsAutomationGUI(root)
-    root.mainloop()
-
+                    self.log(f"❌ Error: {e}"); return
+            self.log(f"\n✅ ALL LAYERS DONE!")
+        threading.Thread(target=runner, daemon=True).start()
 
 if __name__ == "__main__":
-    main()
+    app = ShortsAutomationGUI()
+    app.mainloop()

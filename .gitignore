@@ -38,3 +38,10 @@ venv/
 # Temporary files
 *.tmp
 *.temp
+*.mp3
+
+# Backup files
+*_backup.py
+*_backup.json
+*backup.py
+config_backup.json
